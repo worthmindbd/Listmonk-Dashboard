@@ -2,7 +2,7 @@
 
 A modern, dark-themed dashboard for managing your self-hosted [ListMonk](https://listmonk.app/) instance. Built with FastAPI and vanilla JavaScript.
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
+![Python](https://img.shields.io/badge/Python-3.10+-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green) ![Docker](https://img.shields.io/badge/Docker-Ready-blue) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ## Features
 
@@ -11,7 +11,7 @@ A modern, dark-themed dashboard for managing your self-hosted [ListMonk](https:/
 - **Lists** - Create and manage lists with tags, type (public/private), optin settings
 - **Campaigns** - Full control: create, edit, start, pause, cancel, preview, test send
 - **Templates** - Create, edit, preview HTML templates
-- **Bounces** - View and filter by campaign, export as CSV
+- **Bounces** - View and filter by campaign, delete individual or all, export as CSV
 
 ### Analytics
 - **Dashboard** - Summary cards (subscribers, lists, campaigns) + performance charts
@@ -43,9 +43,27 @@ Detects subscribers who clicked links but got blocklisted (from bounces) and aut
 - Deletes their false bounce records
 - Runs every 6 hours in the background, or manually via the dashboard
 
+### Security
+- Session-based authentication with signed cookies
+- Login required for all pages and API endpoints
+- Credentials configured via environment variables
+- Sessions expire after 7 days
+
 ## Quick Start
 
-### 1. Clone and install
+### Option 1: Docker (Recommended)
+
+```bash
+git clone https://github.com/worthmindbd/Listmonk-Dashboard.git
+cd Listmonk-Dashboard
+cp .env.example .env
+nano .env  # Fill in your credentials
+docker compose up -d --build
+```
+
+Open **http://localhost:8000** and login.
+
+### Option 2: Manual
 
 ```bash
 git clone https://github.com/worthmindbd/Listmonk-Dashboard.git
@@ -53,33 +71,75 @@ cd Listmonk-Dashboard
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 2. Configure
-
-Create a `.env` file in the project root:
-
-```env
-LISTMONK_URL=https://your-listmonk-instance.com
-LISTMONK_USER=listmonk
-LISTMONK_API_KEY=your-api-key-here
-```
-
-You can find your API credentials in ListMonk under **Settings > API**.
-
-### 3. Run
-
-```bash
-source venv/bin/activate
+cp .env.example .env
+nano .env  # Fill in your credentials
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Open **http://localhost:8000** in your browser.
+## Configuration
 
-For development with auto-reload:
+Create a `.env` file (or copy `.env.example`):
+
+```env
+# ListMonk API connection
+LISTMONK_URL=https://your-listmonk-instance.com
+LISTMONK_USER=listmonk
+LISTMONK_API_KEY=your-api-key-here
+
+# Dashboard login credentials
+DASHBOARD_USER=admin
+DASHBOARD_PASS=changeme
+
+# Session signing key (leave empty to auto-generate, set for persistence across restarts)
+SESSION_SECRET=
+```
+
+Generate a session secret:
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
+
+## Production Deployment (VPS with Nginx)
+
+### 1. Clone and configure on your VPS
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+cd /opt
+git clone https://github.com/worthmindbd/Listmonk-Dashboard.git
+cd Listmonk-Dashboard
+cp .env.example .env
+nano .env  # Set your credentials and a strong password
+```
+
+### 2. Start with Docker
+
+```bash
+docker compose up -d --build
+```
+
+### 3. Nginx reverse proxy
+
+```nginx
+server {
+    listen 80;
+    server_name dash.yourdomain.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+### 4. SSL with Certbot
+
+```bash
+sudo ln -s /etc/nginx/sites-available/listmonk-dashboard /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d dash.yourdomain.com
 ```
 
 ## Project Structure
@@ -87,7 +147,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 ListMonk-Dashboard/
   app/
-    main.py                    # FastAPI app + background tasks
+    main.py                    # FastAPI app + auth middleware + background tasks
+    auth.py                    # Session-based authentication
     config.py                  # .env settings loader
     routers/
       subscribers.py           # Subscriber CRUD + import/export
@@ -105,7 +166,7 @@ ListMonk-Dashboard/
   static/
     css/style.css              # Dark theme styles
     js/
-      api.js                   # Fetch wrapper
+      api.js                   # Fetch wrapper with auth handling
       app.js                   # SPA router + shared components
       charts.js                # Dashboard home + Chart.js
       analytics.js             # Campaign analytics page
@@ -115,20 +176,24 @@ ListMonk-Dashboard/
       scheduler.js             # Campaign scheduler UI
       converter.js             # CSV converter UI
   templates/
-    index.html                 # SPA shell
+    index.html                 # SPA shell (authenticated)
+    login.html                 # Login page
+  Dockerfile
+  docker-compose.yml
+  .env.example
   requirements.txt
-  .env                         # Your ListMonk credentials (not committed)
-  schedule.json                # Scheduler config (auto-generated)
 ```
 
 ## API Documentation
 
-The dashboard exposes its own REST API. Once running, visit **http://localhost:8000/docs** for the interactive Swagger UI.
+Once running, visit **http://localhost:8000/docs** for the interactive Swagger UI (requires login).
 
 Key endpoints:
 
 | Endpoint | Description |
 |----------|-------------|
+| `POST /auth/login` | Authenticate and get session cookie |
+| `GET /auth/logout` | End session |
 | `GET /api/subscribers` | List subscribers with search/filter |
 | `GET /api/subscribers/export-all` | Export all subscribers as CSV |
 | `GET /api/campaigns` | List all campaigns |
@@ -136,6 +201,7 @@ Key endpoints:
 | `GET /api/campaigns/{id}/subscribers/clicks/export` | Export who clicked in a campaign |
 | `GET /api/campaigns/{id}/subscribers/bounces/export` | Export who bounced in a campaign |
 | `GET /api/campaigns/analytics/{type}` | Campaign analytics (views/clicks/bounces/links) |
+| `GET /api/bounces` | List bounces with campaign filter |
 | `GET /api/bounces/export` | Export bounce records as CSV |
 | `POST /api/converter/convert` | Convert CSV to ListMonk format |
 | `GET /api/scheduler` | Get scheduler config and status |
@@ -146,10 +212,14 @@ Key endpoints:
 
 - **Backend**: Python, FastAPI, httpx (async HTTP), Jinja2
 - **Frontend**: Vanilla JavaScript, Chart.js, CSS (no build step)
-- **Architecture**: Monolithic - single process serves API + frontend
-- **Why no React/Next.js?**: Simplicity. No build tools, no node_modules, single `pip install` and run. The FastAPI backend exposes clean JSON endpoints if you ever want to swap in a different frontend.
+- **Deployment**: Docker, Nginx, Certbot
+- **Architecture**: Monolithic - single process serves API + frontend + background tasks
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10+ (or Docker)
 - A running ListMonk instance with API access
+
+## Developed by
+
+[WorthMind](https://www.facebook.com/worthmind.net)
