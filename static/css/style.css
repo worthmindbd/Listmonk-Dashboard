@@ -132,6 +132,23 @@ body {
 .status-dot.connected { background: var(--success); }
 .status-dot.error { background: var(--danger); }
 
+.sidebar-credit {
+    margin-top: 10px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.sidebar-credit a {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.sidebar-credit a:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+}
+
 /* ── Main Content ─────────────────────────────────────── */
 .main-content {
     flex: 1;
