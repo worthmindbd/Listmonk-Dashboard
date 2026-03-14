@@ -27,9 +27,10 @@ ListMonk requires a specific CSV format (`email`, `name`, `attributes` as JSON).
 3. Preview the converted output
 4. Download the converted CSV or import directly to ListMonk
 
-### Campaign Scheduler
-ListMonk has no built-in send time window. This scheduler adds it:
+### Settings (Campaign Scheduler + Auto-Unblock)
+All automation is managed from the **Settings** page with tabbed UI:
 
+**Campaign Scheduler** - ListMonk has no built-in send time window. This adds it:
 - Set a daily send window (e.g., **8:00 AM - 8:00 PM EST**)
 - Choose which days (Mon-Fri, weekends, etc.)
 - Running campaigns **auto-pause** outside the window
@@ -37,11 +38,10 @@ ListMonk has no built-in send time window. This scheduler adds it:
 - Manually paused campaigns are never touched
 - Timezone-aware with visual timeline
 
-### Auto-Unblock Protection
-Detects subscribers who clicked links but got blocklisted (from bounces) and automatically:
+**Auto-Unblock Protection** - Detects subscribers who clicked links but got blocklisted (from bounces) and automatically:
 - Re-enables them (removes blocklist status)
 - Deletes their false bounce records
-- Runs every 6 hours in the background, or manually via the dashboard
+- Runs every 6 hours in the background, or manually via Settings
 
 ### Security
 - Session-based authentication with signed cookies
@@ -173,11 +173,13 @@ ListMonk-Dashboard/
       subscribers.js           # Subscriber management
       campaigns.js             # Campaign management
       lists.js                 # List management
-      scheduler.js             # Campaign scheduler UI
+      settings.js              # Settings page (scheduler + auto-unblock)
       converter.js             # CSV converter UI
   templates/
     index.html                 # SPA shell (authenticated)
     login.html                 # Login page
+  .github/workflows/
+    deploy.yml                 # Auto-deploy on push to main
   Dockerfile
   docker-compose.yml
   .env.example
@@ -214,6 +216,16 @@ Key endpoints:
 - **Frontend**: Vanilla JavaScript, Chart.js, CSS (no build step)
 - **Deployment**: Docker, Nginx, Certbot
 - **Architecture**: Monolithic - single process serves API + frontend + background tasks
+
+## CI/CD Auto-Deploy
+
+A GitHub Actions workflow is included (`.github/workflows/deploy.yml`) that auto-deploys on every push to `main`. Add these repository secrets:
+
+| Secret | Value |
+|--------|-------|
+| `VPS_HOST` | Your VPS IP address |
+| `VPS_USER` | SSH username (e.g., `root`) |
+| `VPS_SSH_KEY` | SSH private key for authentication |
 
 ## Requirements
 
