@@ -9,17 +9,15 @@ const Dashboard = {
 
         try {
             // Fetch all data in parallel
-            const [listsRes, campaignsRes, subscribersRes, unblockRes] = await Promise.allSettled([
+            const [listsRes, campaignsRes, subscribersRes] = await Promise.allSettled([
                 API.get('/api/lists?per_page=1&minimal=true'),
                 API.get('/api/campaigns?per_page=1'),
                 API.get('/api/subscribers?per_page=1'),
-                API.get('/api/auto-unblock/status'),
             ]);
 
             const totalLists = listsRes.status === 'fulfilled' ? (listsRes.value?.data?.total || 0) : 0;
             const totalCampaigns = campaignsRes.status === 'fulfilled' ? (campaignsRes.value?.data?.total || 0) : 0;
             const totalSubscribers = subscribersRes.status === 'fulfilled' ? (subscribersRes.value?.data?.total || 0) : 0;
-            const blocklistedClickers = unblockRes.status === 'fulfilled' ? (unblockRes.value?.blocklisted_clickers || 0) : 0;
 
             // Get recent campaigns for chart data
             let campaigns = [];
@@ -45,21 +43,6 @@ const Dashboard = {
                         <div class="stat-label">Active Campaigns</div>
                         <div class="stat-value">${App.formatNumber(campaigns.filter(c => c.status === 'running').length)}</div>
                     </div>
-                </div>
-
-                <!-- Auto-Unblock Status -->
-                <div class="card" style="margin-bottom:20px;${blocklistedClickers > 0 ? 'border-color:var(--warning)' : ''}">
-                    <div class="card-header">
-                        <h3 class="card-title">Auto-Unblock Protection</h3>
-                        <div class="action-btns">
-                            <span class="badge badge-${blocklistedClickers > 0 ? 'warning' : 'success'}">${blocklistedClickers > 0 ? blocklistedClickers + ' need unblocking' : 'All clear'}</span>
-                            <button class="btn btn-sm btn-primary" onclick="Dashboard.runUnblock()">Run Now</button>
-                        </div>
-                    </div>
-                    <p style="font-size:0.85rem;color:var(--text-secondary)">
-                        Automatically detects subscribers who clicked links in campaigns but got blocklisted (from bounces).
-                        Runs every 6 hours in the background. Clickers are real engaged users and should not be blocked.
-                    </p>
                 </div>
 
                 <div class="charts-grid">
@@ -116,23 +99,6 @@ const Dashboard = {
 
         } catch (err) {
             App.setContent(`<div class="empty-state"><h3>Failed to load dashboard</h3><p>${err.message}</p></div>`);
-        }
-    },
-
-    async runUnblock() {
-        App.toast('Running auto-unblock...', 'info');
-        try {
-            const result = await API.post('/api/auto-unblock/run');
-            if (result.error) {
-                App.toast(result.error, 'error');
-            } else if (result.success > 0) {
-                App.toast(`Unblocked ${result.success} subscriber(s)`, 'success');
-                this.render(); // Refresh dashboard
-            } else {
-                App.toast('No blocklisted clickers found', 'success');
-            }
-        } catch {
-            App.toast('Failed to run auto-unblock', 'error');
         }
     },
 
