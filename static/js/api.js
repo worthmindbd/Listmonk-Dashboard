@@ -18,6 +18,10 @@ const API = {
         try {
             const resp = await fetch(path, opts);
             if (!resp.ok) {
+                if (resp.status === 401) {
+                    window.location.href = '/auth/login';
+                    return;
+                }
                 let detail = `HTTP ${resp.status}`;
                 try {
                     const err = await resp.json();
