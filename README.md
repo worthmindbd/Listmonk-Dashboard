@@ -231,6 +231,9 @@ A GitHub Actions workflow is included (`.github/workflows/deploy.yml`) that auto
 
 - Python 3.10+ (or Docker)
 - A running ListMonk instance with API access
+- **Individual subscriber tracking** must be **enabled** in ListMonk:
+  - Go to **ListMonk Settings > Privacy > Individual subscriber tracking** → Turn **ON**
+  - This is required for subscriber-level exports (who viewed, clicked, bounced) and Auto-Unblock Protection to work
 
 ## Developed by
 
