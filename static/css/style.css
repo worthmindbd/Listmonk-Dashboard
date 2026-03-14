@@ -62,17 +62,9 @@
 .theme-toggle {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 8px 0;
-    margin-top: 8px;
-    font-size: 0.8rem;
+    gap: 8px;
     color: var(--text-muted);
-}
-
-.theme-toggle-label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    margin-left: 8px;
 }
 
 .theme-switch {
