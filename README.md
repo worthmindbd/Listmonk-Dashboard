@@ -222,4 +222,4 @@ Key endpoints:
 
 ## Developed by
 
-[WorthMind](https://www.facebook.com/worthmind.net)
+[WorthMind](https://worthmind.net/)
