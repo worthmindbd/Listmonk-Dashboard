@@ -385,25 +385,41 @@ select option { background: var(--bg-secondary); }
 .checkbox-group {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 10px;
 }
 
 .checkbox-label {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     font-size: 0.85rem;
     color: var(--text-secondary);
     cursor: pointer;
-    padding: 6px 10px;
+    padding: 8px 16px;
     border: 1px solid var(--border-color);
     border-radius: var(--radius);
     transition: all 0.15s ease;
+    user-select: none;
 }
 
-.checkbox-label:hover { border-color: var(--accent); }
-.checkbox-label input:checked + span { color: var(--accent); }
-.checkbox-label:has(input:checked) { border-color: var(--accent); background: var(--accent-bg); }
+.checkbox-label input[type="checkbox"] {
+    display: none;
+}
+
+.checkbox-label span {
+    font-weight: 500;
+    font-size: 0.9rem;
+}
+
+.checkbox-label:hover { border-color: var(--accent); color: var(--text-primary); }
+
+.checkbox-label:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+}
+
+.checkbox-label:has(input:checked) span { color: #fff; }
 
 /* ── Badges ───────────────────────────────────────────── */
 .badge {

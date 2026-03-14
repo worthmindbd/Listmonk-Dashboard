@@ -185,13 +185,13 @@ const Settings = {
                     <div class="checkbox-group">${daysHtml}</div>
                 </div>
 
-                <div style="margin-top:20px;margin-bottom:20px">
-                    <label style="font-size:0.85rem;font-weight:500;color:var(--text-secondary);margin-bottom:8px;display:block">Daily Timeline</label>
-                    <div style="position:relative;height:40px;background:var(--bg-input);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border-color)">
-                        <div style="position:absolute;left:${(s.start_hour * 60 + s.start_minute) / 1440 * 100}%;right:${100 - (s.end_hour * 60 + s.end_minute) / 1440 * 100}%;top:0;bottom:0;background:var(--success-bg);border-left:2px solid var(--success);border-right:2px solid var(--success)"></div>
+                <div style="margin-top:24px;margin-bottom:24px">
+                    <label style="font-size:0.85rem;font-weight:500;color:var(--text-secondary);margin-bottom:10px;display:block">Daily Timeline</label>
+                    <div style="position:relative;height:44px;background:var(--bg-input);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border-color)">
+                        <div style="position:absolute;left:${(s.start_hour * 60 + s.start_minute) / 1440 * 100}%;right:${100 - (s.end_hour * 60 + s.end_minute) / 1440 * 100}%;top:0;bottom:0;background:rgba(34,197,94,0.2);border-left:2px solid var(--success);border-right:2px solid var(--success)"></div>
                         ${this.renderTimeMarkers()}
                     </div>
-                    <div style="display:flex;justify-content:space-between;font-size:0.7rem;color:var(--text-muted);margin-top:4px">
+                    <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--text-muted);margin-top:6px;padding:0 2px">
                         <span>12AM</span><span>3AM</span><span>6AM</span><span>9AM</span><span>12PM</span><span>3PM</span><span>6PM</span><span>9PM</span><span>12AM</span>
                     </div>
                 </div>
