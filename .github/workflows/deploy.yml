@@ -15,6 +15,6 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            cd /opt/Listmonk-Dashboard
+            cd /root/Listmonk-Dashboard
             git pull origin main
             docker compose up -d --build
