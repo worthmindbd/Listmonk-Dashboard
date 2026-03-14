@@ -315,19 +315,18 @@ const Bounces = {
     campaigns: [],
 
     async render() {
-        // Fetch campaigns for filter dropdown (first time or refresh)
-        if (!this.campaigns.length) {
-            try {
-                const res = await API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC');
-                this.campaigns = res?.data?.results || [];
-            } catch {}
-        }
-
         try {
-            let params = `page=${this.page}&per_page=50`;
+            let params = `page=${this.page}&per_page=25`;
             if (this.campaignFilter) params += `&campaign_id=${this.campaignFilter}`;
 
-            const result = await API.get(`/api/bounces?${params}`);
+            // Fetch campaigns (for filter) and bounces in parallel
+            const [campRes, result] = await Promise.all([
+                this.campaigns.length
+                    ? Promise.resolve(null)
+                    : API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC'),
+                API.get(`/api/bounces?${params}`),
+            ]);
+            if (campRes) this.campaigns = campRes?.data?.results || [];
             const data = result?.data || {};
             const bounces = data.results || [];
             const total = data.total || 0;
@@ -381,7 +380,7 @@ const Bounces = {
             });
 
             html += '</tbody></table></div>';
-            html += App.renderPagination(this.page, total, 50, 'Bounces.goToPage');
+            html += App.renderPagination(this.page, total, 25, 'Bounces.goToPage');
             App.setContent(html);
         } catch (err) {
             App.setContent(`<div class="empty-state"><h3>Failed to load bounces</h3><p>${err.message || ''}</p></div>`);
