@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -104,7 +104,28 @@
         }
         .credit a { color: var(--accent); text-decoration: none; }
         .credit a:hover { text-decoration: underline; }
+
+        /* Light theme */
+        [data-theme="light"] {
+            --bg-primary: #f5f6fa;
+            --bg-card: #ffffff;
+            --border-color: #e2e4ea;
+            --text-primary: #1a1d27;
+            --text-secondary: #5a5e72;
+            --text-muted: #8b8fa3;
+            --accent: #6366f1;
+            --accent-hover: #4f46e5;
+            --danger: #dc2626;
+        }
+        [data-theme="light"] .login-card { box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
     </style>
+    <script>
+        // Respect saved theme preference
+        (function() {
+            var t = localStorage.getItem('theme') || 'dark';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
 </head>
 <body>
     <div class="login-card">
