@@ -107,6 +107,7 @@ async def run_scheduler_tick(client: ListMonkClient):
                 try:
                     await client.change_campaign_status(cid, "paused")
                     auto_paused.add(cid)
+                    camp["status"] = "paused"
                     changed = True
                     logger.info(f"Auto-PAUSED campaign #{cid} '{camp['name']}' (outside {schedule['start_hour']:02d}:{schedule['start_minute']:02d}-{schedule['end_hour']:02d}:{schedule['end_minute']:02d} {schedule['timezone']})")
                 except Exception as e:
@@ -117,15 +118,13 @@ async def run_scheduler_tick(client: ListMonkClient):
                 try:
                     await client.change_campaign_status(cid, "running")
                     auto_paused.discard(cid)
+                    camp["status"] = "running"
                     changed = True
                     logger.info(f"Auto-RESUMED campaign #{cid} '{camp['name']}' (inside send window)")
                 except Exception as e:
                     logger.error(f"Failed to resume campaign #{cid}: {e}")
 
-        # Clean up auto_paused list: remove campaigns that are no longer paused or don't exist
-        active_ids = {c["id"] for c in campaigns}
-        auto_paused = auto_paused & active_ids
-        # Also remove any that are no longer in paused state
+        # Clean up auto_paused list: remove any that are no longer in paused state
         for camp in campaigns:
             if camp["id"] in auto_paused and camp["status"] != "paused":
                 auto_paused.discard(camp["id"])
