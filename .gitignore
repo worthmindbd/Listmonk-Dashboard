@@ -12,3 +12,4 @@ uploads/
 schedule.json
 .claude/
 .agents/
+.agent/
