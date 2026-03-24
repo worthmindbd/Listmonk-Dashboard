@@ -12,6 +12,7 @@ A modern, dark-themed dashboard for managing your self-hosted [ListMonk](https:/
 - **Campaigns** - Full control: create, edit, start, pause, cancel, preview, test send
 - **Templates** - Create, edit, preview HTML templates
 - **Bounces** - View and filter by campaign, delete individual or all, export as CSV
+- **Unsubscribes** - IMAP-based auto-detection of unsubscribe requests from campaign replies
 
 ### Analytics
 - **Dashboard** - Summary cards (subscribers, lists, campaigns) + performance charts
@@ -26,6 +27,16 @@ ListMonk requires a specific CSV format (`email`, `name`, `attributes` as JSON).
 2. Map columns visually (select email, name, and attribute columns)
 3. Preview the converted output
 4. Download the converted CSV or import directly to ListMonk
+
+### IMAP Unsubscribe Monitor
+Automatically detects unsubscribe requests from campaign reply emails:
+- Scans your IMAP inbox every **1 hour** for keywords: `"Remove me"`, `"Unsubscribe me"`, `"Exclude me"`
+- Matches replies to the correct campaign by date
+- Automatically **unsubscribes** the sender from all lists and **blocklists** them
+- Campaign-grouped dashboard with per-campaign management (export, bulk delete, remove list)
+- Uses IMAP `SINCE` filter to only scan emails from the latest campaign month (no wasted processing)
+- Concurrent scan protection with asyncio lock
+- Manual "Scan Now" button with loading state and timeout
 
 ### Settings (Campaign Scheduler + Auto-Unblock)
 All automation is managed from the **Settings** page with tabbed UI:
@@ -92,6 +103,13 @@ DASHBOARD_PASS=changeme
 
 # Session signing key (leave empty to auto-generate, set for persistence across restarts)
 SESSION_SECRET=
+
+# IMAP settings for unsubscribe monitoring (optional)
+IMAP_HOST=mail.example.com
+IMAP_PORT=993
+IMAP_USER=your@email.com
+IMAP_PASS=your-password
+IMAP_USE_SSL=true
 ```
 
 Generate a session secret:
@@ -157,12 +175,14 @@ ListMonk-Dashboard/
       templates.py             # Template CRUD
       bounces.py               # Bounce management + export
       converter.py             # CSV converter endpoints
+      unsubscribes.py          # Unsubscribe management + IMAP scan trigger
     services/
       listmonk_client.py       # Async API client for ListMonk
       csv_converter.py         # CSV to ListMonk format converter
       export_service.py        # CSV streaming export utility
       auto_unblock.py          # Auto-unblock blocklisted clickers
       campaign_scheduler.py    # Campaign send window scheduler
+      imap_unsubscribe.py      # IMAP inbox scanner for unsubscribe detection
   static/
     css/style.css              # Dark theme styles
     js/
@@ -175,11 +195,13 @@ ListMonk-Dashboard/
       lists.js                 # List management
       settings.js              # Settings page (scheduler + auto-unblock)
       converter.js             # CSV converter UI
+      unsubscribes.js          # Unsubscribe dashboard (campaign-grouped)
   templates/
     index.html                 # SPA shell (authenticated)
     login.html                 # Login page
   .github/workflows/
     deploy.yml                 # Auto-deploy on push to main
+  start.sh                     # Dev server launcher
   Dockerfile
   docker-compose.yml
   .env.example
@@ -209,6 +231,12 @@ Key endpoints:
 | `GET /api/scheduler` | Get scheduler config and status |
 | `PUT /api/scheduler` | Update scheduler settings |
 | `POST /api/auto-unblock/run` | Manually trigger auto-unblock |
+| `GET /api/unsubscribes` | List unsubscribe records (paginated) |
+| `GET /api/unsubscribes/campaigns` | Campaign-grouped unsubscribe summary |
+| `GET /api/unsubscribes/campaign/{key}` | Records for a specific campaign |
+| `POST /api/unsubscribes/scan` | Manually trigger IMAP scan |
+| `GET /api/unsubscribes/export` | Export all unsubscribes as CSV |
+| `GET /api/unsubscribes/imap-status` | Check IMAP connection status |
 
 ## Tech Stack
 
