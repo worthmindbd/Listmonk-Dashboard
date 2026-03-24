@@ -69,15 +69,15 @@ async def auto_unblock_loop():
 
 
 async def imap_scan_loop():
-    """Scan IMAP inbox for unsubscribe requests every hour."""
+    """Scan IMAP inbox for unsubscribe requests every hour (cron-style, no run on startup)."""
     while True:
+        await asyncio.sleep(IMAP_SCAN_INTERVAL)
         try:
             result = await scan_and_unsubscribe(listmonk)
             if result.get("processed", 0) > 0:
                 logger.info(f"IMAP scan: {result['processed']} unsubscribe(s) processed")
         except Exception as e:
             logger.error(f"IMAP scan error: {e}")
-        await asyncio.sleep(IMAP_SCAN_INTERVAL)
 
 
 @asynccontextmanager

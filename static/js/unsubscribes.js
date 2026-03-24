@@ -52,7 +52,7 @@ const Unsubscribes = {
 
             // If we're in detail view, stay there
             if (this.activeCampaign) {
-                await this.loadCampaignRecords(this.activeCampaign.campaign_key);
+                await this.loadCampaignRecords(this.activeCampaign.campaign_id);
                 this.renderDetailView();
             } else {
                 this.renderListView();
@@ -153,7 +153,7 @@ const Unsubscribes = {
                 const readableDate = this.formatCampaignDate(g.campaign_key);
                 const cleanName = this.cleanCampaignName(g.campaign_name).replace(/</g, '&lt;');
                 html += `
-                    <div class="unsub-campaign-card" onclick="Unsubscribes.openCampaign('${g.campaign_key}')">
+                    <div class="unsub-campaign-card" onclick="Unsubscribes.openCampaign(${g.campaign_id})">
                         <div class="unsub-campaign-header">
                             <div class="unsub-campaign-info">
                                 <span class="badge badge-primary" style="font-size:0.8rem;padding:4px 10px;margin-right:8px">${readableDate}</span>
@@ -176,21 +176,20 @@ const Unsubscribes = {
     },
 
     /* ── Detail View — shows records for a single campaign ── */
-    async openCampaign(key) {
-        // Find the campaign group info
-        this.activeCampaign = this.campaignGroups.find(g => g.campaign_key === key) || { campaign_key: key, campaign_name: 'Unknown', count: 0 };
+    async openCampaign(campaignId) {
+        this.activeCampaign = this.campaignGroups.find(g => g.campaign_id === campaignId) || { campaign_id: campaignId, campaign_key: 'unknown', campaign_name: 'Unknown', count: 0 };
         this.campaignPage = 1;
         this.selectedEmails.clear();
 
         App.setContent('<div class="loading-spinner">Loading campaign records...</div>');
 
-        await this.loadCampaignRecords(key);
+        await this.loadCampaignRecords(campaignId);
         this.renderDetailView();
     },
 
-    async loadCampaignRecords(key) {
+    async loadCampaignRecords(campaignId) {
         try {
-            const res = await API.get(`/api/unsubscribes/campaign/${encodeURIComponent(key)}?page=${this.campaignPage}&per_page=${this.campaignPerPage}`);
+            const res = await API.get(`/api/unsubscribes/campaign/${campaignId}?page=${this.campaignPage}&per_page=${this.campaignPerPage}`);
             this.campaignRecords = res.data || { results: [], total: 0 };
         } catch {
             this.campaignRecords = { results: [], total: 0 };
@@ -212,11 +211,11 @@ const Unsubscribes = {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 Delete Selected${hasSelected ? ` (${this.selectedEmails.size})` : ''}
             </button>
-            <button class="btn btn-sm" onclick="Unsubscribes.exportCampaignCSV('${camp.campaign_key}')">
+            <button class="btn btn-sm" onclick="Unsubscribes.exportCampaignCSV(${camp.campaign_id})">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Export CSV
             </button>
-            <button class="btn btn-sm btn-danger" onclick="Unsubscribes.removeCampaign('${camp.campaign_key}')">
+            <button class="btn btn-sm btn-danger" onclick="Unsubscribes.removeCampaign(${camp.campaign_id})">
                 Remove List
             </button>
         `);
@@ -310,7 +309,7 @@ const Unsubscribes = {
     /* ── Pagination ───────────────────────────────────────── */
     async goToCampaignPage(p) {
         this.campaignPage = p;
-        await this.loadCampaignRecords(this.activeCampaign.campaign_key);
+        await this.loadCampaignRecords(this.activeCampaign.campaign_id);
         this.renderDetailView();
     },
 
@@ -318,7 +317,7 @@ const Unsubscribes = {
     async deleteRecord(email) {
         if (!confirm(`Remove "${email}" from this campaign's unsubscribe list?`)) return;
         try {
-            await API.post('/api/unsubscribes/records/delete', { emails: [email] });
+            await API.del(`/api/unsubscribes/records?emails=${encodeURIComponent(email)}`);
             App.toast(`Removed ${email}`, 'success');
             this.selectedEmails.delete(email);
             await this.render();
@@ -332,7 +331,8 @@ const Unsubscribes = {
         if (!count) return;
         if (!confirm(`Remove ${count} selected record(s)? This cannot be undone.`)) return;
         try {
-            await API.post('/api/unsubscribes/records/delete', { emails: [...this.selectedEmails] });
+            const emailParams = [...this.selectedEmails].map(e => `emails=${encodeURIComponent(e)}`).join('&');
+            await API.del(`/api/unsubscribes/records?${emailParams}`);
             App.toast(`Removed ${count} record(s)`, 'success');
             this.selectedEmails.clear();
             await this.render();
@@ -341,10 +341,10 @@ const Unsubscribes = {
         }
     },
 
-    async removeCampaign(key) {
-        if (!confirm(`Remove ALL unsubscribe records for campaign "${key}"? This cannot be undone.`)) return;
+    async removeCampaign(campaignId) {
+        if (!confirm('Remove ALL unsubscribe records for this campaign? This cannot be undone.')) return;
         try {
-            const res = await API.del(`/api/unsubscribes/campaign/${encodeURIComponent(key)}`);
+            const res = await API.del(`/api/unsubscribes/campaign/${campaignId}`);
             App.toast(res.message || 'Campaign removed', 'success');
             this.activeCampaign = null;
             await this.render();
@@ -354,11 +354,11 @@ const Unsubscribes = {
     },
 
     /* ── Export ────────────────────────────────────────────── */
-    async exportCampaignCSV(key) {
+    async exportCampaignCSV(campaignId) {
         try {
-            const result = await API.get(`/api/unsubscribes/campaign/${encodeURIComponent(key)}/export`);
+            const result = await API.get(`/api/unsubscribes/campaign/${campaignId}/export`);
             if (result.blob) {
-                API.downloadBlob(result.blob, `unsubscribes_${key.replace('/', '-')}.csv`);
+                API.downloadBlob(result.blob, `unsubscribes_campaign_${campaignId}.csv`);
                 App.toast('Campaign exported', 'success');
             }
         } catch {

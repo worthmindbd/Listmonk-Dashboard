@@ -473,7 +473,7 @@ const Analytics = {
 
         // Also export unsubscribes for this campaign
         try {
-            const unsubResult = await API.get(`/api/unsubscribes/by-campaign-id/${campId}/export`);
+            const unsubResult = await API.get(`/api/unsubscribes/campaign/${campId}/export`);
             if (unsubResult.blob) {
                 API.downloadBlob(unsubResult.blob, `${safeName}_unsubscribes.csv`);
                 exported++;

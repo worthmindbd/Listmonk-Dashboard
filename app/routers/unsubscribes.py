@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from app.services.imap_unsubscribe import (
     load_log, save_log, get_stats, check_imap_status, scan_and_unsubscribe,
@@ -46,32 +46,37 @@ async def get_imap_status():
 
 @router.get("/campaigns")
 async def get_campaign_groups():
-    """Return unsubscribe records grouped by campaign (month/year key)."""
+    """Return unsubscribe records grouped by individual campaign (campaign_id)."""
     records = load_log()
-    groups: dict[str, dict] = {}
+    groups: dict = {}
 
     for r in records:
-        key = r.get("campaign_key", "unknown")
-        if key not in groups:
-            groups[key] = {
-                "campaign_key": key,
+        cid = r.get("campaign_id") or "unknown"
+        group_key = str(cid)
+        if group_key not in groups:
+            groups[group_key] = {
+                "campaign_key": r.get("campaign_key", "unknown"),
                 "campaign_name": r.get("campaign_name", ""),
-                "campaign_id": r.get("campaign_id"),
+                "campaign_id": cid,
+                "group_key": group_key,
                 "count": 0,
-                "records": [],
             }
-        groups[key]["count"] += 1
+        groups[group_key]["count"] += 1
 
-    # Sort by key descending (most recent month first)
-    sorted_groups = sorted(groups.values(), key=lambda g: g["campaign_key"], reverse=True)
+    # Sort by campaign_key descending (most recent month first), then by campaign name
+    sorted_groups = sorted(
+        groups.values(),
+        key=lambda g: (g["campaign_key"], g.get("campaign_name", "")),
+        reverse=True,
+    )
     return {"data": sorted_groups}
 
 
-@router.get("/campaign/{key}")
-async def get_campaign_records(key: str, page: int = 1, per_page: int = 50):
-    """Return paginated records for a specific campaign group."""
+@router.get("/campaign/{campaign_id}")
+async def get_campaign_records(campaign_id: int, page: int = 1, per_page: int = 50):
+    """Return paginated records for a specific campaign by its ID."""
     records = load_log()
-    campaign_records = [r for r in records if r.get("campaign_key") == key]
+    campaign_records = [r for r in records if r.get("campaign_id") == campaign_id]
     campaign_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
 
     total = len(campaign_records)
@@ -83,69 +88,47 @@ async def get_campaign_records(key: str, page: int = 1, per_page: int = 50):
             "total": total,
             "page": page,
             "per_page": per_page,
-            "campaign_key": key,
+            "campaign_id": campaign_id,
             "campaign_name": campaign_records[0].get("campaign_name", "") if campaign_records else "",
         }
     }
 
 
-@router.delete("/campaign/{key}")
-async def delete_campaign_group(key: str):
-    """Delete all unsubscribe records for a specific campaign group."""
+@router.delete("/campaign/{campaign_id}")
+async def delete_campaign_group(campaign_id: int):
+    """Delete all unsubscribe records for a specific campaign by its ID."""
     records = load_log()
     before_count = len(records)
-    remaining = [r for r in records if r.get("campaign_key") != key]
+    remaining = [r for r in records if r.get("campaign_id") != campaign_id]
     removed = before_count - len(remaining)
     save_log(remaining)
-    return {"removed": removed, "message": f"Removed {removed} record(s) from campaign {key}"}
+    return {"removed": removed, "message": f"Removed {removed} record(s) from campaign {campaign_id}"}
 
 
-@router.post("/records/delete")
-async def delete_records(body: dict):
-    """Delete specific records by email address."""
-    emails_to_delete = set(body.get("emails", []))
-    if not emails_to_delete:
-        raise HTTPException(status_code=400, detail="No emails provided")
-
+@router.delete("/records")
+async def delete_records(emails: list[str] = Query(default=[])):
+    """Delete specific unsubscribe records by email."""
     records = load_log()
     before_count = len(records)
-    remaining = [r for r in records if r.get("email") not in emails_to_delete]
+    remaining = [r for r in records if r.get("email") not in emails]
     removed = before_count - len(remaining)
     save_log(remaining)
     return {"removed": removed, "message": f"Removed {removed} record(s)"}
 
 
-@router.get("/campaign/{key}/export")
-async def export_campaign_csv(key: str):
+@router.get("/campaign/{campaign_id}/export")
+async def export_campaign_csv(campaign_id: int):
     """Export a single campaign's unsubscribe records as CSV."""
     records = load_log()
-    campaign_records = [r for r in records if r.get("campaign_key") == key]
+    campaign_records = [r for r in records if r.get("campaign_id") == campaign_id]
     if not campaign_records:
         raise HTTPException(status_code=404, detail="No records found for this campaign")
 
     campaign_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
     columns = ["email", "name", "keyword", "campaign_name", "campaign_key", "timestamp"]
-    filename = f"unsubscribes_{key.replace('/', '-')}.csv"
-    return StreamingResponse(
-        dict_list_to_csv(campaign_records, columns),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
-
-
-@router.get("/by-campaign-id/{campaign_id}/export")
-async def export_by_campaign_id(campaign_id: int):
-    """Export unsubscribe records filtered by ListMonk campaign ID as CSV."""
-    records = load_log()
-    filtered = [r for r in records if r.get("campaign_id") == campaign_id]
-    if not filtered:
-        raise HTTPException(status_code=404, detail="No unsubscribe records for this campaign")
-
-    filtered.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
-    columns = ["email", "name", "keyword", "campaign_name", "campaign_key", "timestamp"]
     filename = f"unsubscribes_campaign_{campaign_id}.csv"
     return StreamingResponse(
-        dict_list_to_csv(filtered, columns),
+        dict_list_to_csv(campaign_records, columns),
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
