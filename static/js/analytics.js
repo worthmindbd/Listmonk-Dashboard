@@ -7,6 +7,7 @@ const Analytics = {
     selectedCampaignId: 0,
     fromDate: '',
     toDate: '',
+    campaignUnsubCount: 0,
 
     async render() {
         // Set default date range: last 30 days
@@ -36,6 +37,8 @@ const Analytics = {
             this.selectedCampaignId = this.campaigns[0].id;
         }
 
+        // Fetch per-campaign unsubscribe count
+        await this.loadCampaignUnsubCount();
         this.renderPage();
     },
 
@@ -126,6 +129,7 @@ const Analytics = {
                     <div class="stat-card success"><div class="stat-label">Views</div><div class="stat-value">${App.formatNumber(selectedCamp.views || 0)}</div></div>
                     <div class="stat-card warning"><div class="stat-label">Clicks</div><div class="stat-value">${App.formatNumber(selectedCamp.clicks || 0)}</div></div>
                     <div class="stat-card danger"><div class="stat-label">Bounces</div><div class="stat-value">${App.formatNumber(selectedCamp.bounces || 0)}</div></div>
+                    <div class="stat-card" style="border-left-color:#14b8a6"><div class="stat-label">Unsubscribes</div><div class="stat-value" style="color:#14b8a6">${App.formatNumber(this.campaignUnsubCount)}</div></div>
                 </div>` : ''}
             </div>
 
@@ -224,10 +228,23 @@ const Analytics = {
         });
     },
 
-    onCampaignChange(val) {
+    async onCampaignChange(val) {
         this.selectedCampaignId = parseInt(val);
-        // Re-render to update stats, then load analytics
+        await this.loadCampaignUnsubCount();
         this.renderPage();
+    },
+
+    async loadCampaignUnsubCount() {
+        if (!this.selectedCampaignId) {
+            this.campaignUnsubCount = 0;
+            return;
+        }
+        try {
+            const res = await API.get(`/api/unsubscribes/stats?campaign_id=${this.selectedCampaignId}`);
+            this.campaignUnsubCount = res.campaign_count || 0;
+        } catch {
+            this.campaignUnsubCount = 0;
+        }
     },
 
     onDateChange() {
@@ -438,6 +455,7 @@ const Analytics = {
         if (!campId) { App.toast('Select a campaign first', 'error'); return; }
 
         const campName = this.campaigns.find(c => c.id === campId)?.name || 'campaign';
+        const safeName = campName.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
         App.toast(`Exporting all data for "${campName}"... this may take a moment`, 'info');
 
         const types = ['views', 'clicks', 'bounces'];
@@ -447,15 +465,23 @@ const Analytics = {
             try {
                 const result = await API.get(`/api/campaigns/${campId}/subscribers/${type}/export`);
                 if (result.blob) {
-                    const safeName = campName.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
                     API.downloadBlob(result.blob, `${safeName}_${type}_subscribers.csv`);
                     exported++;
                 }
             } catch {}
         }
 
+        // Also export unsubscribes for this campaign
+        try {
+            const unsubResult = await API.get(`/api/unsubscribes/by-campaign-id/${campId}/export`);
+            if (unsubResult.blob) {
+                API.downloadBlob(unsubResult.blob, `${safeName}_unsubscribes.csv`);
+                exported++;
+            }
+        } catch {}
+
         if (exported > 0) {
-            App.toast(`Exported ${exported} subscriber list(s)`, 'success');
+            App.toast(`Exported ${exported} file(s) including unsubscribes`, 'success');
         } else {
             App.toast('No data available to export', 'error');
         }

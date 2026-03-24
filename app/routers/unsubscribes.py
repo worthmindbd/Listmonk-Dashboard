@@ -28,9 +28,14 @@ async def get_unsubscribes(page: int = 1, per_page: int = 25):
 
 
 @router.get("/stats")
-async def get_unsubscribe_stats():
-    """Return aggregate unsubscribe counts for analytics."""
-    return get_stats()
+async def get_unsubscribe_stats(campaign_id: int = 0):
+    """Return aggregate unsubscribe counts. Optionally filter by campaign_id."""
+    stats = get_stats()
+    if campaign_id:
+        records = load_log()
+        campaign_count = sum(1 for r in records if r.get("campaign_id") == campaign_id)
+        stats["campaign_count"] = campaign_count
+    return stats
 
 
 @router.get("/imap-status")
@@ -123,6 +128,24 @@ async def export_campaign_csv(key: str):
     filename = f"unsubscribes_{key.replace('/', '-')}.csv"
     return StreamingResponse(
         dict_list_to_csv(campaign_records, columns),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/by-campaign-id/{campaign_id}/export")
+async def export_by_campaign_id(campaign_id: int):
+    """Export unsubscribe records filtered by ListMonk campaign ID as CSV."""
+    records = load_log()
+    filtered = [r for r in records if r.get("campaign_id") == campaign_id]
+    if not filtered:
+        raise HTTPException(status_code=404, detail="No unsubscribe records for this campaign")
+
+    filtered.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    columns = ["email", "name", "keyword", "campaign_name", "campaign_key", "timestamp"]
+    filename = f"unsubscribes_campaign_{campaign_id}.csv"
+    return StreamingResponse(
+        dict_list_to_csv(filtered, columns),
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
