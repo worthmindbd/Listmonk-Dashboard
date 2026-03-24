@@ -14,6 +14,7 @@ const App = {
         'templates': { title: 'Templates', render: () => Templates.render() },
         'bounces': { title: 'Bounces', render: () => Bounces.render() },
         'converter': { title: 'CSV Converter', render: () => Converter.render() },
+        'unsubscribes': { title: 'Unsubscribes', render: () => Unsubscribes.render() },
     },
 
     init() {

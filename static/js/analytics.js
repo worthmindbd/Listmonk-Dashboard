@@ -18,12 +18,17 @@ const Analytics = {
 
         App.setContent('<div class="loading-spinner">Loading analytics...</div>');
 
-        // Fetch all campaigns for the selector
+        // Fetch campaigns and unsubscribe stats in parallel
         try {
-            const res = await API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC');
-            this.campaigns = res?.data?.results || [];
+            const [campRes, unsubRes] = await Promise.allSettled([
+                API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC'),
+                API.get('/api/unsubscribes/stats'),
+            ]);
+            this.campaigns = campRes.status === 'fulfilled' ? (campRes.value?.data?.results || []) : [];
+            this.unsubStats = unsubRes.status === 'fulfilled' ? unsubRes.value : { total: 0 };
         } catch {
             this.campaigns = [];
+            this.unsubStats = { total: 0 };
         }
 
         // Default to first campaign if none selected
@@ -45,6 +50,7 @@ const Analytics = {
         const totalViews = this.campaigns.reduce((sum, c) => sum + (c.views || 0), 0);
         const totalClicks = this.campaigns.reduce((sum, c) => sum + (c.clicks || 0), 0);
         const totalBounces = this.campaigns.reduce((sum, c) => sum + (c.bounces || 0), 0);
+        const totalUnsubs = this.unsubStats?.total || 0;
 
         let html = `
             <!-- Overview Stats -->
@@ -62,6 +68,11 @@ const Analytics = {
                     <div class="stat-label">Total Clicks</div>
                     <div class="stat-value">${App.formatNumber(totalClicks)}</div>
                     <div style="font-size:0.8rem;color:var(--text-muted)">${totalSent ? ((totalClicks/totalSent)*100).toFixed(1) : 0}% CTR</div>
+                </div>
+                <div class="stat-card" style="border-left-color:#14b8a6">
+                    <div class="stat-label">Unsubscribes (IMAP)</div>
+                    <div class="stat-value" style="color:#14b8a6">${App.formatNumber(totalUnsubs)}</div>
+                    <div style="font-size:0.8rem;color:var(--text-muted)"><a href="#/unsubscribes" style="color:#14b8a6;text-decoration:none">View details →</a></div>
                 </div>
                 <div class="stat-card danger">
                     <div class="stat-label">Total Bounces</div>

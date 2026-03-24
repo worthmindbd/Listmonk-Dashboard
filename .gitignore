@@ -13,3 +13,7 @@ schedule.json
 .claude/
 .agents/
 .agent/
+
+# Runtime data
+unsubscribe_log.json
+uvicorn.log

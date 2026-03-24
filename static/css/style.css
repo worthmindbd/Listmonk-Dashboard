@@ -900,3 +900,59 @@ select option { background: var(--bg-secondary); }
     color: var(--accent);
     border-bottom-color: var(--accent);
 }
+
+/* ── Unsubscribe Campaign Cards ──────────────────────── */
+.unsub-campaigns-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.unsub-campaign-card {
+    border-radius: var(--radius);
+    transition: all 0.2s ease;
+}
+
+.unsub-campaign-card + .unsub-campaign-card {
+    border-top: 1px solid var(--border-color);
+}
+
+.unsub-campaign-card:hover {
+    background: var(--bg-hover);
+}
+
+.unsub-campaign-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 20px;
+    cursor: pointer;
+    transition: background 0.15s;
+    gap: 12px;
+}
+
+.unsub-campaign-header:hover {
+    background: var(--bg-hover);
+}
+
+.unsub-campaign-info {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+}
+
+.unsub-campaign-info strong {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 1.05rem;
+}
+
+.unsub-campaign-meta {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+

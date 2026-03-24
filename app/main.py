@@ -16,15 +16,18 @@ from app.services.campaign_scheduler import (
     load_schedule, save_schedule, is_within_send_window,
     scheduler_loop, run_scheduler_tick,
 )
+from app.services.imap_unsubscribe import scan_and_unsubscribe
 from app.auth import verify_session, create_session, clear_session, check_credentials
-from app.routers import subscribers, lists, campaigns, templates, bounces, converter
+from app.routers import subscribers, lists, campaigns, templates, bounces, converter, unsubscribes
 
 logger = logging.getLogger("listmonk-dashboard")
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 AUTO_UNBLOCK_INTERVAL = 6 * 60 * 60
+IMAP_SCAN_INTERVAL = 60 * 60  # 1 hour
 _auto_unblock_task = None
 _scheduler_task = None
+_imap_scan_task = None
 
 
 # ── Auth Middleware ───────────────────────────────────────
@@ -65,16 +68,30 @@ async def auto_unblock_loop():
         await asyncio.sleep(AUTO_UNBLOCK_INTERVAL)
 
 
+async def imap_scan_loop():
+    """Scan IMAP inbox for unsubscribe requests every hour."""
+    while True:
+        try:
+            result = await scan_and_unsubscribe(listmonk)
+            if result.get("processed", 0) > 0:
+                logger.info(f"IMAP scan: {result['processed']} unsubscribe(s) processed")
+        except Exception as e:
+            logger.error(f"IMAP scan error: {e}")
+        await asyncio.sleep(IMAP_SCAN_INTERVAL)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _auto_unblock_task, _scheduler_task
+    global _auto_unblock_task, _scheduler_task, _imap_scan_task
     await listmonk.start()
     _auto_unblock_task = asyncio.create_task(auto_unblock_loop())
     _scheduler_task = asyncio.create_task(scheduler_loop(listmonk))
-    logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s)")
+    _imap_scan_task = asyncio.create_task(imap_scan_loop())
+    logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP scan (1h)")
     yield
     _auto_unblock_task.cancel()
     _scheduler_task.cancel()
+    _imap_scan_task.cancel()
     await listmonk.close()
 
 
@@ -93,6 +110,7 @@ app.include_router(campaigns.router, prefix="/api/campaigns", tags=["Campaigns"]
 app.include_router(templates.router, prefix="/api/templates", tags=["Templates"])
 app.include_router(bounces.router, prefix="/api/bounces", tags=["Bounces"])
 app.include_router(converter.router, prefix="/api/converter", tags=["CSV Converter"])
+app.include_router(unsubscribes.router, prefix="/api/unsubscribes", tags=["Unsubscribes"])
 
 
 # ── Auth Routes ──────────────────────────────────────────
