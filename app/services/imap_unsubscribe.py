@@ -22,6 +22,11 @@ from app.services.listmonk_client import ListMonkClient
 logger = logging.getLogger("imap_unsubscribe")
 
 LOG_FILE = Path(__file__).resolve().parent.parent.parent / "unsubscribe_log.json"
+SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent / "unsubscribe_settings.json"
+
+_DEFAULT_SETTINGS = {
+    "blocklist_enabled": False,
+}
 
 UNSUBSCRIBE_KEYWORDS = [
     "remove me",
@@ -68,6 +73,19 @@ def save_log(records: list[dict]) -> None:
     LOG_FILE.write_text(json.dumps(records, indent=2, ensure_ascii=False))
 
 
+def load_settings() -> dict:
+    try:
+        data = json.loads(SETTINGS_FILE.read_text())
+        return {**_DEFAULT_SETTINGS, **data}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return dict(_DEFAULT_SETTINGS)
+
+
+def save_settings(data: dict) -> None:
+    merged = {**load_settings(), **data}
+    SETTINGS_FILE.write_text(json.dumps(merged, indent=2))
+
+
 def _extract_body(msg: email.message.EmailMessage) -> str:
     """Extract plain-text body from an email message."""
     body = ""
@@ -91,6 +109,75 @@ def _extract_body(msg: email.message.EmailMessage) -> str:
             except (LookupError, UnicodeDecodeError):
                 body = payload.decode("utf-8", errors="replace")
     return body
+
+
+def _extract_reply_only(full_body: str) -> str:
+    """
+    Extract ONLY the user's reply text, stripping all quoted/forwarded
+    content from the email body.
+
+    This prevents false-positive keyword matches from our own email
+    template text (e.g., footer saying "Reply with 'Remove me'").
+
+    Handles common quote patterns:
+    - Lines starting with ">" (standard quoting)
+    - "On <date> <someone> wrote:" markers
+    - "From: <address>" forwarding headers
+    - "-----Original Message-----" (Outlook)
+    - "Sent: " / "To: " / "Subject: " header blocks in quoted replies
+    """
+    lines = full_body.splitlines()
+    reply_lines = []
+
+    # Patterns that indicate the start of quoted/forwarded content
+    quote_start_patterns = [
+        # "On Mon, Jan 1, 2026 at 12:00 PM John Doe <john@example.com> wrote:"
+        re.compile(r'^On\s+.+wrote:\s*$', re.IGNORECASE),
+        # "-----Original Message-----"
+        re.compile(r'^-{2,}\s*Original Message\s*-{2,}', re.IGNORECASE),
+        # "From: Name <email>" or "From: email" at start of line (forwarded header)
+        re.compile(r'^From:\s+.+@.+', re.IGNORECASE),
+        # "Sent: 3/7/26 12:17 AM" (Outlook-style quoted header)
+        re.compile(r'^Sent:\s+\d', re.IGNORECASE),
+        # "________" or "========" separator lines (common in some clients)
+        re.compile(r'^[_=]{5,}\s*$'),
+        # Gmail-style: "> " quoted lines (3+ consecutive = definitely quoted block)
+        # We handle ">" lines individually below
+    ]
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        # Skip empty lines at the very beginning
+        if not reply_lines and not stripped:
+            continue
+
+        # Check if this line starts a quoted section
+        is_quote_start = False
+        for pattern in quote_start_patterns:
+            if pattern.match(stripped):
+                is_quote_start = True
+                break
+
+        if is_quote_start:
+            # Everything from here is quoted content — stop collecting
+            break
+
+        # Lines starting with ">" are quoted text — skip them
+        if stripped.startswith('>'):
+            # If we haven't collected any reply yet, keep looking
+            # If we already have reply text and hit ">", the reply is above
+            if reply_lines:
+                break
+            continue
+
+        reply_lines.append(line)
+
+    reply_text = '\n'.join(reply_lines).strip()
+
+    # If we couldn't extract a reply (e.g., entire body is quoted),
+    # return empty string so no false match occurs
+    return reply_text
 
 
 def _extract_sender_email(msg: email.message.EmailMessage) -> Optional[str]:
@@ -278,9 +365,21 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                         continue
 
                     body = _extract_body(msg)
-                    keyword_match = KEYWORD_PATTERN.search(body)
+                    # Only scan the user's actual reply, NOT quoted
+                    # template content (which may contain "Remove me" etc.)
+                    reply_text = _extract_reply_only(body)
+
+                    sender_email_preview = _extract_sender_email(msg)
+                    subject_preview = msg.get("Subject", "(no subject)")
+
+                    keyword_match = KEYWORD_PATTERN.search(reply_text)
 
                     if not keyword_match:
+                        # Log if the full body HAD keywords but reply didn't
+                        if KEYWORD_PATTERN.search(body):
+                            print(f"[IMAP] FILTERED OUT: {sender_email_preview} "
+                                  f"('{subject_preview}') — keyword only in "
+                                  f"quoted/template content, not in actual reply")
                         continue
 
                     matched += 1
@@ -341,8 +440,11 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                                 "status": "unsubscribed",
                             })
 
-                        # Blocklist the subscriber
-                        await client.blocklist_subscriber(sub_id)
+                        # Conditionally blocklist based on user setting
+                        scan_settings = load_settings()
+                        if scan_settings.get("blocklist_enabled", False):
+                            await client.blocklist_subscriber(sub_id)
+                            print(f"[IMAP] Blocklisted: {sender_email}")
 
                         record = {
                             "email": sender_email,
@@ -360,7 +462,8 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                         new_records.append(record)
                         processed_emails_set.add(sender_email)  # Prevent duplicates in same scan
                         processed += 1
-                        logger.info(f"Unsubscribed and blocklisted: {sender_email} (campaign: {campaign['campaign_name']})")
+                        action = "Unsubscribed + Blocklisted" if scan_settings.get("blocklist_enabled") else "Unsubscribed"
+                        logger.info(f"{action}: {sender_email} (campaign: {campaign['campaign_name']})")
 
                     except Exception as e:
                         errors += 1

@@ -6,6 +6,7 @@ const Unsubscribes = {
     stats: null,
     imapStatus: null,
     campaignGroups: [],
+    settings: { blocklist_enabled: false },
     // Detail view state
     activeCampaign: null,
     campaignRecords: { results: [], total: 0 },
@@ -40,15 +41,17 @@ const Unsubscribes = {
         App.setContent('<div class="loading-spinner">Loading unsubscribes...</div>');
 
         try {
-            const [statsRes, statusRes, groupsRes] = await Promise.allSettled([
+            const [statsRes, statusRes, groupsRes, settingsRes] = await Promise.allSettled([
                 API.get('/api/unsubscribes/stats'),
                 API.get('/api/unsubscribes/imap-status'),
                 API.get('/api/unsubscribes/campaigns'),
+                API.get('/api/unsubscribes/settings'),
             ]);
 
             this.stats = statsRes.status === 'fulfilled' ? statsRes.value : { total: 0, today: 0, this_week: 0 };
             this.imapStatus = statusRes.status === 'fulfilled' ? statusRes.value : { configured: false, connected: false };
             this.campaignGroups = groupsRes.status === 'fulfilled' ? (groupsRes.value.data || []) : [];
+            this.settings = settingsRes.status === 'fulfilled' ? settingsRes.value : { blocklist_enabled: false };
 
             // If we're in detail view, stay there
             if (this.activeCampaign) {
@@ -100,7 +103,7 @@ const Unsubscribes = {
                     <h3 class="card-title">IMAP Unsubscribe Monitor</h3>
                     <div class="action-btns">${imapBadge}</div>
                 </div>
-                <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap;font-size:0.85rem;color:var(--text-secondary)">
+                <div class="unsub-monitor-info">
                     <div>
                         <span style="color:var(--text-muted)">Scan interval:</span>
                         <strong>Every 1 hour</strong>
@@ -112,8 +115,17 @@ const Unsubscribes = {
                         <code style="font-size:0.8rem">"Exclude me"</code>
                     </div>
                     <div>
+                        <span style="color:var(--text-muted)">Scans:</span>
+                        <strong>Reply text only</strong>
+                        <span style="color:var(--text-muted);font-size:0.75rem">(excludes quoted content)</span>
+                    </div>
+                    <div class="unsub-action-toggle">
                         <span style="color:var(--text-muted)">Action:</span>
-                        <strong>Unsubscribe + Blocklist</strong>
+                        <strong>${this.settings.blocklist_enabled ? 'Unsubscribe + Blocklist' : 'Unsubscribe Only'}</strong>
+                        <label class="toggle-switch" style="margin-left:4px" title="Toggle blocklist: when ON, leads are also blocklisted">
+                            <input type="checkbox" ${this.settings.blocklist_enabled ? 'checked' : ''} onchange="Unsubscribes.toggleBlocklist(this.checked)">
+                            <span class="toggle-slider"></span>
+                        </label>
                     </div>
                 </div>
             </div>
@@ -422,6 +434,40 @@ const Unsubscribes = {
                     </svg>
                     Scan Now`;
             }
+        }
+    },
+
+    /* ── Settings ─────────────────────────────────────────── */
+    async toggleBlocklist(enabled) {
+        try {
+            const resp = await fetch('/api/unsubscribes/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ blocklist_enabled: enabled }),
+            });
+            if (!resp.ok) throw new Error('Failed to update');
+            this.settings.blocklist_enabled = enabled;
+            App.toast(`Action set to: ${enabled ? 'Unsubscribe + Blocklist' : 'Unsubscribe Only'}`, 'success');
+            // Re-render to update the label
+            this.renderListView();
+        } catch {
+            App.toast('Failed to update setting', 'error');
+            // Revert toggle
+            this.settings.blocklist_enabled = !enabled;
+            this.renderListView();
+        }
+    },
+
+    async resetAll() {
+        if (!confirm('This will UNDO all unsubscribes — re-enable and re-subscribe all processed leads in ListMonk, then clear the log. Continue?')) return;
+        App.toast('Resetting all unsubscribes...', 'info');
+        try {
+            const resp = await fetch('/api/unsubscribes/reset', { method: 'POST' });
+            const result = await resp.json();
+            App.toast(result.message || 'Reset complete', 'success');
+            await this.render();
+        } catch (err) {
+            App.toast(`Reset failed: ${err.message || 'Unknown error'}`, 'error');
         }
     },
 };

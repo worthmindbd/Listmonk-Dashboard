@@ -816,6 +816,23 @@ select option { background: var(--bg-secondary); }
     margin-bottom: 20px;
 }
 
+/* ── Unsubscribe Monitor Info ─────────────────────────── */
+.unsub-monitor-info {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.unsub-action-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
 /* ── Responsive ───────────────────────────────────────── */
 @media (max-width: 768px) {
     .sidebar {
@@ -830,11 +847,131 @@ select option { background: var(--bg-secondary); }
 
     .menu-toggle { display: block; }
 
-    .content-area { padding: 16px; }
+    .content-area { padding: 12px; }
 
-    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .stats-grid {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
 
     .charts-grid { grid-template-columns: 1fr; }
+
+    /* Top bar */
+    .top-bar {
+        padding: 0 12px;
+        gap: 8px;
+    }
+
+    .page-title {
+        font-size: 1rem;
+    }
+
+    .top-bar-actions {
+        gap: 4px;
+    }
+
+    .top-bar-actions .btn-sm {
+        padding: 4px 8px;
+        font-size: 0.75rem;
+    }
+
+    /* IMAP Monitor Card */
+    .unsub-monitor-info {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+
+    .unsub-action-toggle {
+        margin-left: 0;
+        width: 100%;
+        padding-top: 10px;
+        border-top: 1px solid var(--border-color);
+    }
+
+    /* Card header stacking */
+    .card-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+
+    .card-header .action-btns {
+        align-self: flex-start;
+    }
+
+    /* Campaign cards */
+    .unsub-campaign-header {
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 14px 16px;
+        gap: 10px;
+    }
+
+    .unsub-campaign-info {
+        flex-wrap: wrap;
+    }
+
+    .unsub-campaign-meta {
+        align-self: flex-end;
+    }
+
+    /* Detail view */
+    .table-wrapper {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    table {
+        min-width: 600px;
+    }
+
+    th, td {
+        padding: 10px 12px;
+        font-size: 0.8rem;
+    }
+
+    /* Stat cards */
+    .stat-card {
+        padding: 14px;
+    }
+
+    .stat-value {
+        font-size: 1.5rem;
+    }
+
+    /* Pagination */
+    .pagination {
+        flex-wrap: wrap;
+    }
+}
+
+/* Small phones */
+@media (max-width: 480px) {
+    .content-area { padding: 8px; }
+
+    .card { padding: 14px; }
+
+    .unsub-monitor-info code {
+        font-size: 0.7rem;
+    }
+
+    .top-bar-actions .btn-sm svg {
+        display: none;
+    }
+
+    .badge {
+        font-size: 0.65rem;
+        padding: 2px 6px;
+    }
+
+    .stat-value {
+        font-size: 1.3rem;
+    }
+
+    .unsub-campaign-info strong {
+        font-size: 0.9rem;
+    }
 }
 
 /* ── Scrollbar ────────────────────────────────────────── */
@@ -956,3 +1093,50 @@ select option { background: var(--bg-secondary); }
     flex-shrink: 0;
 }
 
+/* ── Toggle Switch ───────────────────────────────────── */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 22px;
+    cursor: pointer;
+    vertical-align: middle;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 22px;
+    transition: all 0.25s ease;
+}
+
+.toggle-slider::before {
+    content: '';
+    position: absolute;
+    left: 3px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 14px;
+    height: 14px;
+    background: var(--text-muted);
+    border-radius: 50%;
+    transition: all 0.25s ease;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+    left: 21px;
+    background: #fff;
+}
