@@ -37,6 +37,16 @@ const Unsubscribes = {
         return cleaned || name;
     },
 
+    /** Render a source badge for a log record. */
+    renderSourceBadge(record) {
+        const source = record.source || 'email';
+        if (source === 'link') {
+            return '<span class="badge badge-primary" title="Clicked unsubscribe link">link click</span>';
+        }
+        const kw = (record.keyword || 'email reply').replace(/</g, '&lt;');
+        return `<span class="badge badge-warning" title="${kw}">email reply</span>`;
+    },
+
     async render() {
         App.setContent('<div class="loading-spinner">Loading unsubscribes...</div>');
 
@@ -126,6 +136,12 @@ const Unsubscribes = {
                             <input type="checkbox" ${this.settings.blocklist_enabled ? 'checked' : ''} onchange="Unsubscribes.toggleBlocklist(this.checked)">
                             <span class="toggle-slider"></span>
                         </label>
+                    </div>
+                    <div>
+                        <span style="color:var(--text-muted)">Sources:</span>
+                        <strong>${App.formatNumber(stats.email_count || 0)} email repl${(stats.email_count || 0) !== 1 ? 'ies' : 'y'}</strong>
+                        <span style="color:var(--text-muted);margin:0 6px">·</span>
+                        <strong>${App.formatNumber(stats.link_count || 0)} link click${(stats.link_count || 0) !== 1 ? 's' : ''}</strong>
                     </div>
                 </div>
             </div>
@@ -255,7 +271,7 @@ const Unsubscribes = {
                 <div class="table-wrapper"><table>
                     <thead><tr>
                         <th style="width:30px"><input type="checkbox" onchange="Unsubscribes.toggleSelectAll(this)" ${this.selectedEmails.size === records.length && records.length > 0 ? 'checked' : ''}/></th>
-                        <th>#</th><th>Email</th><th>Name</th><th>Keyword</th><th>Date</th><th>Actions</th>
+                        <th>#</th><th>Email</th><th>Name</th><th>Type</th><th>Date</th><th>Actions</th>
                     </tr></thead><tbody>`;
 
         if (!records.length) {
@@ -266,7 +282,6 @@ const Unsubscribes = {
             const idx = (this.campaignPage - 1) * this.campaignPerPage + i + 1;
             const email = (r.email || '-').replace(/</g, '&lt;');
             const name = (r.name || '-').replace(/</g, '&lt;');
-            const keyword = (r.keyword || '-').replace(/</g, '&lt;');
             const isChecked = this.selectedEmails.has(r.email);
 
             html += `<tr>
@@ -274,7 +289,7 @@ const Unsubscribes = {
                 <td>${idx}</td>
                 <td><strong>${email}</strong></td>
                 <td>${name}</td>
-                <td><span class="badge badge-warning">${keyword}</span></td>
+                <td>${Unsubscribes.renderSourceBadge(r)}</td>
                 <td>${App.formatDateTime(r.timestamp)}</td>
                 <td>
                     <button class="btn btn-sm btn-danger" style="padding:2px 8px;font-size:0.75rem" onclick="Unsubscribes.deleteRecord('${r.email}')">
@@ -415,8 +430,11 @@ const Unsubscribes = {
             if (result.error) {
                 App.toast(result.error, 'error');
             } else {
-                const msg = `Scanned ${result.scanned || 0} emails — ${result.processed || 0} unsubscribed`;
-                App.toast(msg, result.processed > 0 ? 'success' : 'info');
+                const imapData = result.imap || result;  // supports both old and new format
+                const linkData = result.link || {};
+                const totalProcessed = (imapData.processed || 0) + (linkData.processed || 0);
+                const msg = `Scanned ${imapData.scanned || 0} emails + ${linkData.scanned_lists || 0} lists — ${totalProcessed} unsubscribed`;
+                App.toast(msg, totalProcessed > 0 ? 'success' : 'info');
                 await this.render();
             }
         } catch (err) {
