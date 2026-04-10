@@ -4,6 +4,7 @@ from app.services.imap_unsubscribe import (
     load_log, save_log, get_stats, check_imap_status, scan_and_unsubscribe,
     load_settings, save_settings,
 )
+from app.services.link_unsubscribe import scan_link_unsubscribes
 from app.services.listmonk_client import listmonk
 from app.services.export_service import dict_list_to_csv
 
@@ -167,9 +168,16 @@ async def export_unsubscribes():
 
 @router.post("/scan")
 async def trigger_scan():
-    """Manually trigger an IMAP scan."""
+    """Manually trigger both IMAP and link-based unsubscribe scans."""
     try:
-        return await scan_and_unsubscribe(listmonk)
+        imap_result = await scan_and_unsubscribe(listmonk)
+        link_result = await scan_link_unsubscribes(listmonk)
+        total_processed = imap_result.get("processed", 0) + link_result.get("processed", 0)
+        return {
+            "imap": imap_result,
+            "link": link_result,
+            "message": f"Scan complete: {total_processed} unsubscribed",
+        }
     except Exception as e:
         return {"error": str(e)}
 
