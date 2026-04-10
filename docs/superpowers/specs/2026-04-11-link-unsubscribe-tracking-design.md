@@ -37,19 +37,19 @@ Runs on the same hourly schedule as the IMAP scan, called from the background sc
 
 **Flow:**
 1. Fetch all lists from ListMonk (`GET /api/lists`, minimal mode)
-2. For each list, paginate through subscribers with `subscription_status=unsubscribed`
+2. For each list, paginate through subscribers with `subscription_status=unsubscribed` using `per_page=100`. Continue fetching pages until the number of results returned is less than `per_page` (termination condition).
 3. Diff against existing `unsubscribe_log.json` — skip emails already recorded (any source)
 4. For each new entry:
    a. Fetch subscriber's full record to get all current list memberships
-   b. Unsubscribe from all lists (`PUT /api/subscribers/lists`)
+   b. Unsubscribe from all lists via `PUT /api/subscribers/lists` with `action: "unsubscribe"`. ListMonk has already removed them from the triggering list; this call is idempotent for that list and also removes them from all others. No filtering of the triggering list is needed.
    c. If `blocklist_enabled`: blocklist the subscriber (`PUT /api/subscribers/{id}/blocklist`)
-   d. Match to the most recent finished/sent campaign targeting that list
+   d. Match to the most recent finished or sent campaign targeting that list (see Campaign Matching)
    e. Record in log with `source: "link"`
 5. Return summary: `{ scanned_lists, new_found, processed, errors }`
 
 ### Campaign Matching
 
-Use `GET /api/campaigns?list_id={id}&status=finished&order=DESC&per_page=1` to find the most recent finished campaign for the list the subscriber unsubscribed from. If no campaign is found, `campaign_id` is `null` and the record is grouped under "Unknown Campaign" in the UI.
+Query `GET /api/campaigns?list_id={id}&order_by=created_at&order=DESC&per_page=50` (no status filter, since ListMonk campaigns may be in `finished` or `sent` status) and pick the most recent campaign whose `created_at` date is on or before the scan timestamp. The `campaign_key` is derived as `YYYY-MM` from the campaign's `created_at` date (e.g., a campaign created on `2026-04-05` → `campaign_key: "2026-04"`). This matches the same derivation used in the IMAP scanner. If no campaign is found, `campaign_id` is `null`, `campaign_name` is `"Unknown"`, and `campaign_key` is the current year-month.
 
 ### Updated `ListMonkClient`
 
@@ -152,7 +152,7 @@ Add a source breakdown line to the IMAP monitor info section:
 Sources:   N email replies    N link clicks
 ```
 
-Computed from `campaignGroups` records or a dedicated stats field in `/api/unsubscribes/stats`.
+The `/api/unsubscribes/stats` endpoint will be extended to include `link_count` and `email_count` fields, computed server-side from `unsubscribe_log.json`. The frontend reads these new fields and renders the breakdown — no client-side record fetching or counting is required.
 
 ### Scan Toast
 
@@ -180,4 +180,6 @@ The dedup set is built from `{r["email"] for r in existing_log}` — same patter
 - Verify deduplication: running scan twice should not double-process
 - Verify `blocklist_enabled=False` skips blocklist call
 - Verify campaign matching falls back gracefully when no campaign found
+- Verify pagination termination: a list with exactly 100 unsubscribers triggers a second page fetch; a list with 99 stops after one page
+- Verify partial failure: if `PUT /api/subscribers/lists` fails, the subscriber is NOT logged (no partial record written); error count is incremented
 - Frontend: verify `renderSourceBadge` handles missing `source` field (old records)
