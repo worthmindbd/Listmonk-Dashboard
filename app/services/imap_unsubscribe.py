@@ -449,6 +449,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                         record = {
                             "email": sender_email,
                             "name": subscriber.get("name", ""),
+                            "source": "email",
                             "keyword": matched_keyword,
                             "subject": subject,
                             "message_id": msg_message_id,
@@ -506,19 +507,17 @@ def get_stats() -> dict:
     today = datetime.utcnow().date().isoformat()
     today_count = sum(1 for r in records if r.get("timestamp", "").startswith(today))
 
-    # This week (last 7 days)
     week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
     week_count = sum(1 for r in records if r.get("timestamp", "") >= week_ago)
 
-    # Campaign breakdown
-    campaign_counts = {}
-    for r in records:
-        cname = r.get("campaign_name", "")
-        if cname:
-            campaign_counts[cname] = campaign_counts.get(cname, 0) + 1
+    # Source breakdown — records without 'source' are treated as 'email'
+    link_count = sum(1 for r in records if r.get("source") == "link")
+    email_count = total - link_count
 
     return {
         "total": total,
         "today": today_count,
         "this_week": week_count,
+        "link_count": link_count,
+        "email_count": email_count,
     }
