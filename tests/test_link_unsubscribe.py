@@ -36,3 +36,185 @@ async def test_get_subscribers_by_list_status_passes_correct_params():
         }
     )
     assert result == fake_response
+
+
+# ── scan_link_unsubscribes ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_scan_skips_already_logged_emails(tmp_path, monkeypatch):
+    """Emails already in the log must not be re-processed."""
+    import json
+    from app.services import link_unsubscribe as svc
+
+    log_file = tmp_path / "unsubscribe_log.json"
+    log_file.write_text(json.dumps([
+        {"email": "already@example.com", "source": "link"}
+    ]))
+    monkeypatch.setattr(svc, "LOG_FILE", log_file)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", tmp_path / "settings.json")
+
+    client = make_client()
+    # Lists returns one list
+    client._request = AsyncMock(side_effect=[
+        {"data": {"results": [{"id": 1, "name": "Newsletter"}], "total": 1}},
+        # Subscribers for list 1: returns the already-logged email
+        {"data": {"results": [{"id": 99, "email": "already@example.com", "name": "Test", "lists": [{"id": 1}]}], "total": 1}},
+    ])
+
+    result = await svc.scan_link_unsubscribes(client)
+
+    assert result["new_found"] == 0
+    assert result["processed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_processes_new_link_unsubscribe(tmp_path, monkeypatch):
+    """A new link-unsubscribed email should be processed and logged."""
+    import json
+    from app.services import link_unsubscribe as svc
+
+    log_file = tmp_path / "unsubscribe_log.json"
+    log_file.write_text("[]")
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"blocklist_enabled": false}')
+    monkeypatch.setattr(svc, "LOG_FILE", log_file)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+
+    client = make_client()
+    client._request = AsyncMock(side_effect=[
+        # GET /api/lists
+        {"data": {"results": [{"id": 1, "name": "Newsletter"}], "total": 1}},
+        # GET /api/subscribers (list 1, page 1) — 1 result, less than per_page → done
+        {"data": {"results": [{"id": 55, "email": "new@example.com", "name": "New User", "lists": [{"id": 1}]}], "total": 1}},
+        # GET /api/campaigns (for campaign matching) — no campaigns
+        {"data": {"results": [], "total": 0}},
+        # PUT /api/subscribers/lists (unsubscribe from all)
+        {"data": {}},
+    ])
+
+    result = await svc.scan_link_unsubscribes(client)
+
+    assert result["new_found"] == 1
+    assert result["processed"] == 1
+    assert result["errors"] == 0
+
+    log = json.loads(log_file.read_text())
+    assert len(log) == 1
+    assert log[0]["email"] == "new@example.com"
+    assert log[0]["source"] == "link"
+    assert log[0]["keyword"] is None
+
+
+@pytest.mark.asyncio
+async def test_scan_blocklists_when_enabled(tmp_path, monkeypatch):
+    """When blocklist_enabled=True, blocklist API is called."""
+    import json
+    from app.services import link_unsubscribe as svc
+
+    log_file = tmp_path / "unsubscribe_log.json"
+    log_file.write_text("[]")
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"blocklist_enabled": true}')
+    monkeypatch.setattr(svc, "LOG_FILE", log_file)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+
+    client = make_client()
+    blocklist_calls = []
+
+    async def mock_request(method, path, **kwargs):
+        if method == "PUT" and "blocklist" in path:
+            blocklist_calls.append(path)
+            return {"data": {}}
+        if method == "GET" and path == "/api/lists":
+            return {"data": {"results": [{"id": 1, "name": "N"}], "total": 1}}
+        if method == "GET" and "/api/subscribers" in path:
+            return {"data": {"results": [{"id": 7, "email": "bl@example.com", "name": "BL", "lists": [{"id": 1}]}], "total": 1}}
+        if method == "GET" and "/api/campaigns" in path:
+            return {"data": {"results": [], "total": 0}}
+        return {"data": {}}
+
+    client._request = mock_request
+
+    await svc.scan_link_unsubscribes(client)
+
+    assert any("/blocklist" in c for c in blocklist_calls), "Blocklist API was not called"
+
+
+@pytest.mark.asyncio
+async def test_scan_pagination_fetches_second_page(tmp_path, monkeypatch):
+    """When first page has exactly per_page results, a second page must be fetched."""
+    import json
+    from app.services import link_unsubscribe as svc
+
+    log_file = tmp_path / "unsubscribe_log.json"
+    log_file.write_text("[]")
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"blocklist_enabled": false}')
+    monkeypatch.setattr(svc, "LOG_FILE", log_file)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+
+    per_page = 2  # small for test
+    page_calls = []
+
+    async def mock_request(method, path, **kwargs):
+        params = kwargs.get("params", {})
+        if method == "GET" and path == "/api/lists":
+            return {"data": {"results": [{"id": 1, "name": "N"}], "total": 1}}
+        if method == "GET" and "/api/subscribers" in path:
+            page = params.get("page", 1)
+            page_calls.append(page)
+            if page == 1:
+                # Return exactly per_page results → trigger next page
+                subs = [{"id": i, "email": f"u{i}@x.com", "name": "", "lists": [{"id": 1}]} for i in range(per_page)]
+                return {"data": {"results": subs, "total": per_page + 1}}
+            else:
+                # Page 2: one result → stop
+                return {"data": {"results": [{"id": 99, "email": "u99@x.com", "name": "", "lists": [{"id": 1}]}], "total": 1}}
+        if method == "GET" and "/api/campaigns" in path:
+            return {"data": {"results": [], "total": 0}}
+        return {"data": {}}
+
+    client = make_client()
+    client._request = mock_request
+
+    # Patch per_page constant used in the scanner
+    monkeypatch.setattr(svc, "PER_PAGE", per_page)
+
+    result = await svc.scan_link_unsubscribes(client)
+
+    assert 2 in page_calls, "Second page was never fetched"
+    assert result["new_found"] == per_page + 1
+
+
+@pytest.mark.asyncio
+async def test_scan_does_not_log_on_unsubscribe_api_failure(tmp_path, monkeypatch):
+    """If the unsubscribe-from-all API call fails, subscriber must NOT be logged."""
+    import json
+    from app.services import link_unsubscribe as svc
+
+    log_file = tmp_path / "unsubscribe_log.json"
+    log_file.write_text("[]")
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"blocklist_enabled": false}')
+    monkeypatch.setattr(svc, "LOG_FILE", log_file)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+
+    async def mock_request(method, path, **kwargs):
+        if method == "GET" and path == "/api/lists":
+            return {"data": {"results": [{"id": 1, "name": "N"}], "total": 1}}
+        if method == "GET" and "/api/subscribers" in path:
+            return {"data": {"results": [{"id": 5, "email": "fail@example.com", "name": "", "lists": [{"id": 1}]}], "total": 1}}
+        if method == "GET" and "/api/campaigns" in path:
+            return {"data": {"results": [], "total": 0}}
+        if method == "PUT" and "/api/subscribers/lists" in path:
+            raise Exception("API error")
+        return {"data": {}}
+
+    client = make_client()
+    client._request = mock_request
+
+    result = await svc.scan_link_unsubscribes(client)
+
+    assert result["errors"] == 1
+    log = json.loads(log_file.read_text())
+    assert len(log) == 0, "Failed subscriber must not be logged"

@@ -1,0 +1,210 @@
+"""
+Link Unsubscribe Scanner: Polls ListMonk API for subscribers who used the
+direct unsubscribe link. Applies the same actions as IMAP unsubscribes:
+removes from all lists and optionally blocklists. Records in the shared
+unsubscribe_log.json with source="link".
+"""
+
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+
+from app.services.listmonk_client import ListMonkClient
+
+logger = logging.getLogger("link_unsubscribe")
+
+# Module-level paths — patchable in tests via monkeypatch.setattr
+LOG_FILE = Path(__file__).resolve().parent.parent.parent / "unsubscribe_log.json"
+SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent / "unsubscribe_settings.json"
+
+PER_PAGE = 100  # Patchable in tests
+
+_DEFAULT_SETTINGS = {
+    "blocklist_enabled": False,
+}
+
+
+def load_log() -> list[dict]:
+    """Load the unsubscribe log from LOG_FILE (module-level, patchable in tests)."""
+    try:
+        return json.loads(LOG_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def save_log(records: list[dict]) -> None:
+    """Persist the unsubscribe log to LOG_FILE (module-level, patchable in tests)."""
+    LOG_FILE.write_text(json.dumps(records, indent=2, ensure_ascii=False))
+
+
+def load_settings() -> dict:
+    """Load scanner settings from SETTINGS_FILE (module-level, patchable in tests)."""
+    try:
+        data = json.loads(SETTINGS_FILE.read_text())
+        return {**_DEFAULT_SETTINGS, **data}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return dict(_DEFAULT_SETTINGS)
+
+
+async def _match_campaign_for_list(client: ListMonkClient, list_id: int) -> dict:
+    """
+    Return the most recent campaign (any status) that targets list_id.
+    Returns {campaign_id, campaign_name, campaign_key} or all-None dict.
+    """
+    try:
+        result = await client.get_campaigns(
+            page=1, per_page=50, order_by="created_at", order="DESC"
+        )
+        campaigns = result.get("data", {}).get("results", [])
+    except Exception as e:
+        logger.warning(f"Could not fetch campaigns for list {list_id}: {e}")
+        return {"campaign_id": None, "campaign_name": "Unknown", "campaign_key": _current_campaign_key()}
+
+    now = datetime.utcnow()
+    for camp in campaigns:
+        created = camp.get("created_at", "")
+        if not created:
+            continue
+        try:
+            camp_date = datetime.fromisoformat(created[:10])
+        except (ValueError, TypeError):
+            continue
+        if camp_date <= now:
+            return {
+                "campaign_id": camp.get("id"),
+                "campaign_name": camp.get("name", ""),
+                "campaign_key": f"{camp_date.year}-{camp_date.month:02d}",
+            }
+
+    return {"campaign_id": None, "campaign_name": "Unknown", "campaign_key": _current_campaign_key()}
+
+
+def _current_campaign_key() -> str:
+    now = datetime.utcnow()
+    return f"{now.year}-{now.month:02d}"
+
+
+async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
+    """
+    Scan all ListMonk lists for link-unsubscribed subscribers and process them.
+    Returns summary: {scanned_lists, new_found, processed, errors}.
+    """
+    scanned_lists = 0
+    new_found = 0
+    processed = 0
+    errors = 0
+    new_records = []
+
+    # Load existing log for deduplication
+    existing_log = load_log()
+    processed_emails = {r["email"] for r in existing_log}
+
+    scan_settings = load_settings()
+    blocklist_enabled = scan_settings.get("blocklist_enabled", False)
+
+    # Fetch all lists
+    try:
+        lists_result = await client.get_lists(page=1, per_page=200, minimal=True)
+        all_lists = lists_result.get("data", {}).get("results", [])
+    except Exception as e:
+        logger.error(f"Failed to fetch lists: {e}")
+        return {"scanned_lists": 0, "new_found": 0, "processed": 0, "errors": 1,
+                "message": f"Failed to fetch lists: {e}"}
+
+    for lst in all_lists:
+        list_id = lst.get("id")
+        list_name = lst.get("name", "")
+        if not list_id:
+            continue
+
+        scanned_lists += 1
+        page = 1
+
+        # Paginate through all unsubscribed subscribers for this list
+        while True:
+            try:
+                result = await client.get_subscribers_by_list_status(
+                    list_id=list_id,
+                    subscription_status="unsubscribed",
+                    page=page,
+                    per_page=PER_PAGE,
+                )
+                subscribers = result.get("data", {}).get("results", [])
+            except Exception as e:
+                logger.error(f"Failed to fetch unsubscribed subscribers for list {list_id}: {e}")
+                errors += 1
+                break
+
+            for sub in subscribers:
+                email = (sub.get("email") or "").lower()
+                if not email or email in processed_emails:
+                    continue
+
+                new_found += 1
+                sub_id = sub.get("id")
+                sub_lists = [lst["id"] for lst in sub.get("lists", [])]
+
+                # Match to a campaign
+                campaign = await _match_campaign_for_list(client, list_id)
+
+                # Unsubscribe from all lists — idempotent for already-unsubscribed list
+                try:
+                    if sub_lists:
+                        await client.modify_list_memberships({
+                            "ids": [sub_id],
+                            "action": "unsubscribe",
+                            "target_list_ids": sub_lists,
+                            "status": "unsubscribed",
+                        })
+                except Exception as e:
+                    logger.error(f"Failed to unsubscribe {email} from lists: {e}")
+                    errors += 1
+                    continue  # Do not log — partial failure
+
+                # Optionally blocklist
+                if blocklist_enabled:
+                    try:
+                        await client.blocklist_subscriber(sub_id)
+                        logger.info(f"[LINK] Blocklisted: {email}")
+                    except Exception as e:
+                        logger.error(f"Failed to blocklist {email}: {e}")
+                        # Partial success — still log the unsubscribe
+
+                record = {
+                    "email": email,
+                    "name": sub.get("name", ""),
+                    "source": "link",
+                    "keyword": None,
+                    "list_id": list_id,
+                    "campaign_id": campaign["campaign_id"],
+                    "campaign_name": campaign["campaign_name"],
+                    "campaign_key": campaign["campaign_key"],
+                    "subscriber_id": sub_id,
+                    "lists_removed": sub_lists,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                new_records.append(record)
+                processed_emails.add(email)
+                processed += 1
+                action = "Unsubscribed + Blocklisted" if blocklist_enabled else "Unsubscribed"
+                logger.info(f"[LINK] {action}: {email} (list: {list_name})")
+
+            # Termination: stop when fewer results than PER_PAGE were returned
+            if len(subscribers) < PER_PAGE:
+                break
+            page += 1
+
+    # Persist new records
+    if new_records:
+        existing_log = load_log()
+        existing_log.extend(new_records)
+        save_log(existing_log)
+
+    return {
+        "scanned_lists": scanned_lists,
+        "new_found": new_found,
+        "processed": processed,
+        "errors": errors,
+        "message": f"Link scan complete: {processed} unsubscribed",
+    }
