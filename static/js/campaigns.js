@@ -181,8 +181,19 @@ const Campaigns = {
 
     async showDetail(id) {
         try {
-            const result = await API.get(`/api/campaigns/${id}`);
-            const c = result?.data || {};
+            const [result, unsubRes] = await Promise.allSettled([
+                API.get(`/api/campaigns/${id}`),
+                API.get(`/api/unsubscribes/campaign/${id}`),
+            ]);
+
+            const c = result.status === 'fulfilled' ? (result.value?.data || {}) : {};
+            if (!c.id) throw new Error('Campaign not found');
+
+            const unsubData = unsubRes.status === 'fulfilled' ? (unsubRes.value?.data || {}) : {};
+            const unsubTotal = unsubData.total || 0;
+            const unsubEmail = unsubData.email_count || 0;
+            const unsubLink = unsubData.link_count || 0;
+
             const lists = (c.lists || []).map(l => `<span class="tag">${l.name}</span>`).join('') || '-';
             const tags = (c.tags || []).map(t => `<span class="tag">${t}</span>`).join('') || '-';
 
@@ -220,6 +231,11 @@ const Campaigns = {
                             <div class="stat-label">Bounces</div>
                             <div class="stat-value">${App.formatNumber(c.bounces || 0)}</div>
                             <div style="font-size:0.8rem;color:var(--text-muted)">${bounceRate}% bounce rate</div>
+                        </div>
+                        <div class="stat-card" style="border-left:3px solid var(--accent)">
+                            <div class="stat-label">Unsubscribes</div>
+                            <div class="stat-value">${App.formatNumber(unsubTotal)}</div>
+                            <div style="font-size:0.8rem;color:var(--text-muted)">${unsubEmail} email · ${unsubLink} link</div>
                         </div>
                     </div>
                     <table style="width:auto">

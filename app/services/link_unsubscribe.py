@@ -49,7 +49,9 @@ def load_settings() -> dict:
 
 async def _match_campaign_for_list(client: ListMonkClient, list_id: int) -> dict:
     """
-    Return the most recent campaign (any status) that targets list_id.
+    Return the most recent campaign (any status) that targets list_id,
+    created on or before now. Filters by the campaign's lists array so
+    campaigns targeting other lists are not incorrectly attributed.
     Returns {campaign_id, campaign_name, campaign_key} or all-None dict.
     """
     try:
@@ -63,6 +65,13 @@ async def _match_campaign_for_list(client: ListMonkClient, list_id: int) -> dict
 
     now = datetime.utcnow()
     for camp in campaigns:
+        # Filter to campaigns that target this list (if lists data is present).
+        # If the API omits lists, camp_list_ids will be empty and we skip the filter
+        # (fall back to time-based matching only).
+        camp_list_ids = [l.get("id") for l in (camp.get("lists") or [])]
+        if camp_list_ids and list_id not in camp_list_ids:
+            continue
+
         created = camp.get("created_at", "")
         if not created:
             continue
@@ -119,6 +128,10 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
             continue
 
         scanned_lists += 1
+
+        # Match campaign once per list — same campaign applies to all subscribers in this list
+        campaign = await _match_campaign_for_list(client, list_id)
+
         page = 1
 
         # Paginate through all unsubscribed subscribers for this list
@@ -144,9 +157,6 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
                 new_found += 1
                 sub_id = sub.get("id")
                 sub_lists = [lst["id"] for lst in sub.get("lists", [])]
-
-                # Match to a campaign
-                campaign = await _match_campaign_for_list(client, list_id)
 
                 # Unsubscribe from all lists — idempotent for already-unsubscribed list
                 try:

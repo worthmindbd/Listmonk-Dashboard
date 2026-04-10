@@ -96,12 +96,16 @@ async def get_campaign_records(campaign_id: int, page: int = 1, per_page: int = 
     campaign_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
 
     total = len(campaign_records)
+    link_count = sum(1 for r in campaign_records if r.get("source") == "link")
+    email_count = total - link_count
     start = (page - 1) * per_page
     end = start + per_page
     return {
         "data": {
             "results": campaign_records[start:end],
             "total": total,
+            "link_count": link_count,
+            "email_count": email_count,
             "page": page,
             "per_page": per_page,
             "campaign_id": campaign_id,

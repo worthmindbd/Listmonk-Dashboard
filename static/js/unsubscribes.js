@@ -180,8 +180,9 @@ const Unsubscribes = {
             groups.forEach(g => {
                 const readableDate = this.formatCampaignDate(g.campaign_key);
                 const cleanName = this.cleanCampaignName(g.campaign_name).replace(/</g, '&lt;');
+                const isClickable = Number.isInteger(g.campaign_id);
                 html += `
-                    <div class="unsub-campaign-card" onclick="Unsubscribes.openCampaign(${g.campaign_id})">
+                    <div class="unsub-campaign-card" ${isClickable ? `onclick="Unsubscribes.openCampaign(${g.campaign_id})"` : 'style="cursor:default;opacity:0.75"'}>
                         <div class="unsub-campaign-header">
                             <div class="unsub-campaign-info">
                                 <span class="badge badge-primary" style="font-size:0.8rem;padding:4px 10px;margin-right:8px">${readableDate}</span>
@@ -189,9 +190,7 @@ const Unsubscribes = {
                             </div>
                             <div class="unsub-campaign-meta">
                                 <span class="badge badge-default" style="font-size:0.8rem;text-transform:uppercase">${g.count} unsubscribe${g.count !== 1 ? 's' : ''}</span>
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-left:8px;color:var(--text-muted)">
-                                    <polyline points="9 18 15 12 9 6"/>
-                                </svg>
+                                ${isClickable ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-left:8px;color:var(--text-muted)"><polyline points="9 18 15 12 9 6"/></svg>` : ''}
                             </div>
                         </div>
                     </div>`;
@@ -229,6 +228,8 @@ const Unsubscribes = {
         const data = this.campaignRecords;
         const records = data.results || [];
         const total = data.total || 0;
+        const linkCount = data.link_count || 0;
+        const emailCount = data.email_count || 0;
         const hasSelected = this.selectedEmails.size > 0;
         const readableDate = this.formatCampaignDate(camp.campaign_key);
         const cleanName = this.cleanCampaignName(camp.campaign_name).replace(/</g, '&lt;');
@@ -261,8 +262,23 @@ const Unsubscribes = {
                             <span class="badge badge-primary" style="font-size:0.9rem;padding:6px 14px">${readableDate}</span>
                             <h3 class="card-title" style="margin:0">${cleanName}</h3>
                         </div>
-                        <span style="color:var(--text-muted);font-size:0.85rem">${total} record${total !== 1 ? 's' : ''}</span>
                     </div>
+                </div>
+            </div>
+
+            <!-- Campaign stats -->
+            <div class="stats-grid" style="margin-bottom:20px">
+                <div class="stat-card accent">
+                    <div class="stat-label">Total Unsubscribes</div>
+                    <div class="stat-value">${App.formatNumber(total)}</div>
+                </div>
+                <div class="stat-card warning">
+                    <div class="stat-label">Email Replies</div>
+                    <div class="stat-value">${App.formatNumber(emailCount)}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Link Clicks</div>
+                    <div class="stat-value">${App.formatNumber(linkCount)}</div>
                 </div>
             </div>
 
