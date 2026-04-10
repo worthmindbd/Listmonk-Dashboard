@@ -47,6 +47,22 @@ class ListMonkClient:
             params["list_id"] = list_id
         return await self._request("GET", "/api/subscribers", params=params)
 
+    async def get_subscribers_by_list_status(
+        self,
+        list_id: int,
+        subscription_status: str,
+        page: int = 1,
+        per_page: int = 100,
+    ) -> dict:
+        """Get subscribers for a list filtered by their subscription status."""
+        params = {
+            "list_id": list_id,
+            "subscription_status": subscription_status,
+            "page": page,
+            "per_page": per_page,
+        }
+        return await self._request("GET", "/api/subscribers", params=params)
+
     async def get_subscriber(self, subscriber_id: int) -> dict:
         return await self._request("GET", f"/api/subscribers/{subscriber_id}")
 
