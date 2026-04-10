@@ -17,6 +17,7 @@ from app.services.campaign_scheduler import (
     scheduler_loop, run_scheduler_tick,
 )
 from app.services.imap_unsubscribe import scan_and_unsubscribe
+from app.services.link_unsubscribe import scan_link_unsubscribes
 from app.auth import verify_session, create_session, clear_session, check_credentials
 from app.routers import subscribers, lists, campaigns, templates, bounces, converter, unsubscribes
 
@@ -69,15 +70,21 @@ async def auto_unblock_loop():
 
 
 async def imap_scan_loop():
-    """Scan IMAP inbox for unsubscribe requests every hour (cron-style, no run on startup)."""
+    """Scan IMAP inbox and ListMonk link unsubscribes every hour (no run on startup)."""
     while True:
         await asyncio.sleep(IMAP_SCAN_INTERVAL)
         try:
-            result = await scan_and_unsubscribe(listmonk)
-            if result.get("processed", 0) > 0:
-                logger.info(f"IMAP scan: {result['processed']} unsubscribe(s) processed")
+            imap_result = await scan_and_unsubscribe(listmonk)
+            if imap_result.get("processed", 0) > 0:
+                logger.info(f"IMAP scan: {imap_result['processed']} unsubscribe(s) processed")
         except Exception as e:
             logger.error(f"IMAP scan error: {e}")
+        try:
+            link_result = await scan_link_unsubscribes(listmonk)
+            if link_result.get("processed", 0) > 0:
+                logger.info(f"Link scan: {link_result['processed']} unsubscribe(s) processed")
+        except Exception as e:
+            logger.error(f"Link unsubscribe scan error: {e}")
 
 
 @asynccontextmanager
@@ -87,7 +94,7 @@ async def lifespan(app: FastAPI):
     _auto_unblock_task = asyncio.create_task(auto_unblock_loop())
     _scheduler_task = asyncio.create_task(scheduler_loop(listmonk))
     _imap_scan_task = asyncio.create_task(imap_scan_loop())
-    logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP scan (1h)")
+    logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP scan (1h), link scan (1h)")
     yield
     _auto_unblock_task.cancel()
     _scheduler_task.cancel()
