@@ -187,6 +187,66 @@ async def test_scan_pagination_fetches_second_page(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scan_attributes_to_newest_campaign_across_lists(tmp_path, monkeypatch):
+    """When a subscriber is unsubscribed from multiple lists (e.g. list A and list B),
+    they must be attributed to the most recent campaign that targets ANY of those
+    lists — not to whichever list happens to be scanned first."""
+    import json
+    from app.services import link_unsubscribe as svc
+
+    log_file = tmp_path / "unsubscribe_log.json"
+    log_file.write_text("[]")
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"blocklist_enabled": false}')
+    monkeypatch.setattr(svc, "LOG_FILE", log_file)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+
+    # Same subscriber (id=100) appears as unsubscribed in BOTH list 1 and list 2.
+    # Campaign 10 (older) targets list 1; campaign 20 (newer) targets list 2.
+    # The subscriber should be attributed to campaign 20, regardless of iteration order.
+    subscriber = {
+        "id": 100,
+        "email": "multi@example.com",
+        "name": "Multi Lister",
+        "lists": [{"id": 1}, {"id": 2}],
+    }
+
+    async def mock_request(method, path, **kwargs):
+        params = kwargs.get("params", {})
+        if method == "GET" and path == "/api/lists":
+            return {"data": {"results": [
+                {"id": 1, "name": "Old List"},
+                {"id": 2, "name": "New List"},
+            ], "total": 2}}
+        if method == "GET" and "/api/subscribers" in path:
+            return {"data": {"results": [subscriber], "total": 1}}
+        if method == "GET" and "/api/campaigns" in path:
+            return {"data": {"results": [
+                {"id": 20, "name": "New Campaign", "created_at": "2026-04-10",
+                 "lists": [{"id": 2}]},
+                {"id": 10, "name": "Old Campaign", "created_at": "2026-03-01",
+                 "lists": [{"id": 1}]},
+            ], "total": 2}}
+        if method == "PUT" and "/api/subscribers/lists" in path:
+            return {"data": {}}
+        return {"data": {}}
+
+    client = make_client()
+    client._request = mock_request
+
+    result = await svc.scan_link_unsubscribes(client)
+
+    assert result["processed"] == 1
+    log = json.loads(log_file.read_text())
+    assert len(log) == 1, "Subscriber should be logged exactly once, not once per list"
+    assert log[0]["email"] == "multi@example.com"
+    assert log[0]["campaign_id"] == 20, (
+        f"Expected attribution to newest campaign (id=20), "
+        f"got {log[0]['campaign_id']}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_scan_does_not_log_on_unsubscribe_api_failure(tmp_path, monkeypatch):
     """If the unsubscribe-from-all API call fails, subscriber must NOT be logged."""
     import json
