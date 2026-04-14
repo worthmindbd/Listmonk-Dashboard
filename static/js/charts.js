@@ -78,7 +78,7 @@ const Dashboard = {
 
             campaigns.slice(0, 5).forEach(c => {
                 const listNames = (c.lists || []).map(l => l.name).join(', ') || '-';
-                html += `<tr>
+                html += `<tr style="cursor:pointer" onclick="Campaigns.showDetail(${c.id})">
                     <td><strong>${c.name}</strong></td>
                     <td>${App.statusBadge(c.status)}</td>
                     <td>${listNames}</td>
