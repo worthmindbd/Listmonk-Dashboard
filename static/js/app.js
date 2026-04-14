@@ -350,6 +350,12 @@ const Bounces = {
             `);
 
             let html = `
+                <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;padding:12px;background:var(--bg-secondary);border-radius:8px">
+                    <button class="btn btn-sm btn-primary" onclick="Bounces.fixBlacklistBounces()">Fix Blacklist Bounces</button>
+                    <button class="btn btn-sm" onclick="Bounces.scanBounceMail()">Scan Bounce Mail</button>
+                    <span style="flex:1"></span>
+                    <span style="color:var(--text-secondary);font-size:0.85rem">${App.formatNumber(total)} bounce records</span>
+                </div>
                 <div class="search-bar">
                     <select id="bounceCampFilter" onchange="Bounces.filterCampaign(this.value)" style="width:auto;min-width:250px">
                         <option value="0" ${!this.campaignFilter ? 'selected' : ''}>All Campaigns</option>
@@ -432,6 +438,7 @@ const Bounces = {
     },
 
     async fixBlacklistBounces() {
+        console.log('[BounceScanner] fixBlacklistBounces clicked');
         if (!await App.confirm('Fix Blacklist Bounces',
             'This will scan all hard bounces, find ones caused by IP blacklisting (Spamhaus etc.), ' +
             'reclassify them as soft bounces, and unblock the affected subscribers. Continue?')) return;
@@ -454,6 +461,7 @@ const Bounces = {
     },
 
     async scanBounceMail() {
+        console.log('[BounceScanner] scanBounceMail clicked');
         App.toast('Scanning bounce mailbox...', 'info');
         try {
             const result = await API.post('/api/bounce-scanner/scan');

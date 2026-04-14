@@ -192,7 +192,7 @@ async def scan_bounce_mailbox(client: ListMonkClient) -> dict:
         fixed_emails = []
 
         try:
-            conn.select("INBOX")
+            conn.select("INBOX", readonly=True)
 
             # Search for bounce emails in the last 30 days
             since_date = datetime.utcnow() - timedelta(days=30)
