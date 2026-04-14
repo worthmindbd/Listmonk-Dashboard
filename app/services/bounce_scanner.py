@@ -69,6 +69,24 @@ BLACKLIST_PATTERN = re.compile(
 
 _scan_lock = asyncio.Lock()
 
+# Progress state for the fix_existing_hard_bounces operation so the frontend
+# can poll and render a realtime progress bar. Reset at the start of each run.
+fix_progress: dict = {
+    "status": "idle",   # idle | running | done | error
+    "phase": "",        # starting | fetching | identifying | deleting | unblocking | done | error
+    "current": 0,
+    "total": 0,
+    "message": "",
+    "result": None,
+    "started_at": None,
+    "finished_at": None,
+}
+_fix_lock = asyncio.Lock()
+
+# Bounded concurrency for per-bounce/per-subscriber API calls to ListMonk.
+# 5 is comfortably below "hammering" while giving ~5x speedup over sequential.
+_FIX_CONCURRENCY = 5
+
 
 def connect_bounce_imap() -> Optional[imaplib.IMAP4_SSL]:
     """Connect to the bounce IMAP mailbox."""
@@ -346,107 +364,246 @@ async def _fix_subscriber_bounces(client: ListMonkClient,
 
 async def fix_existing_hard_bounces(client: ListMonkClient) -> dict:
     """
-    Fix hard bounces caused by IP blacklisting (Spamhaus etc.).
+    Reclassify hard bounces caused by IP blacklisting (Spamhaus etc.) as soft.
     Checks the classify_reason in bounce meta for policy rejection codes
     (5.7.1 etc.) and blacklist keywords.
 
-    For matching hard bounces:
-    - Delete the hard bounce record
-    - Unblock the subscriber (re-enable)
+    For each matching hard bounce:
+    1. Delete the hard bounce record from ListMonk
+    2. Create a replacement soft bounce (so the history is preserved but
+       no longer counts toward hard-bounce auto-blocklisting)
+    3. After all reclassifications, unblock every affected subscriber that
+       ListMonk had placed on the blocklist because of the hard bounces
+
+    Updates the module-level fix_progress dict throughout so a polling
+    frontend can render a realtime progress bar.
     """
-    print("[BounceScanner] Starting fix for existing hard bounces...")
+    async with _fix_lock:
+        fix_progress.update({
+            "status": "running",
+            "phase": "starting",
+            "current": 0,
+            "total": 0,
+            "message": "Starting...",
+            "result": None,
+            "started_at": datetime.utcnow().isoformat(),
+            "finished_at": None,
+        })
+        print("[BounceScanner] Starting fix for existing hard bounces...")
 
-    # Step 1: Fetch ALL hard bounces from ListMonk
-    all_hard_bounces = []
-    page = 1
-    while True:
-        result = await client.get_bounces(page, 500)
-        data = result.get("data", {})
-        results = data.get("results", [])
-        if not results:
-            break
-        for b in results:
-            if b.get("type") == "hard":
-                all_hard_bounces.append(b)
-        if page * 500 >= data.get("total", 0):
-            break
-        page += 1
-
-    print(f"[BounceScanner] Found {len(all_hard_bounces)} total hard bounces")
-
-    # Step 2: Identify blacklist-related bounces by classify_reason
-    bounces_to_fix = []
-    for b in all_hard_bounces:
-        meta = b.get("meta", {})
-        classify_reason = str(meta.get("classify_reason", ""))
-        meta_str = str(meta)
-
-        # Match on classify_reason containing policy rejection codes
-        # or any blacklist keyword in the full meta
-        if BLACKLIST_PATTERN.search(classify_reason) or BLACKLIST_PATTERN.search(meta_str):
-            bounces_to_fix.append(b)
-
-    print(f"[BounceScanner] {len(bounces_to_fix)} hard bounces identified as blacklist-related")
-
-    if not bounces_to_fix:
-        return {
-            "total_hard_bounces": len(all_hard_bounces),
-            "blacklist_related": 0,
-            "fixed": 0,
-            "unique_emails_fixed": 0,
-            "subscribers_unblocked": 0,
-            "errors": 0,
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-
-    # Step 3: Delete the hard bounce records
-    fixed = 0
-    errors = 0
-    affected_emails = set()
-
-    for b in bounces_to_fix:
         try:
-            await client.delete_bounce(b["id"])
-            fixed += 1
-            affected_emails.add(b.get("email", "").lower())
-        except Exception as e:
-            errors += 1
-            logger.error(f"Failed to delete bounce {b['id']}: {e}")
-
-    print(f"[BounceScanner] Deleted {fixed} hard bounce records")
-
-    # Step 4: Unblock all affected subscribers who are blocklisted
-    subscribers_unblocked = 0
-    for email_addr in affected_emails:
-        try:
-            sub_result = await client.get_subscribers(
-                1, 1, f"subscribers.email = '{email_addr}'"
+            fix_progress.update(
+                phase="fetching", current=0, total=0,
+                message="Fetching hard bounces from ListMonk...",
             )
-            subs = sub_result.get("data", {}).get("results", [])
-            if not subs:
-                continue
-            sub = subs[0]
-            if sub.get("status") == "blocklisted":
-                await client.update_subscriber(sub["id"], {
-                    "email": sub["email"],
-                    "name": sub.get("name", ""),
-                    "status": "enabled",
-                    "lists": [l["id"] for l in sub.get("lists", [])],
-                    "attribs": sub.get("attribs", {}),
-                })
-                subscribers_unblocked += 1
-        except Exception as e:
-            logger.error(f"Failed to unblock {email_addr}: {e}")
+            all_hard_bounces = []
+            page = 1
+            total_bounces = 0
+            while True:
+                result = await client.get_bounces(page, 500)
+                data = result.get("data", {})
+                results = data.get("results", [])
+                if not results:
+                    break
+                for b in results:
+                    if b.get("type") == "hard":
+                        all_hard_bounces.append(b)
+                total_bounces = data.get("total", 0)
+                fix_progress.update(
+                    current=min(page * 500, total_bounces),
+                    total=total_bounces,
+                    message=f"Fetched page {page} ({len(all_hard_bounces)} hard bounces so far)",
+                )
+                if page * 500 >= total_bounces:
+                    break
+                page += 1
 
-    result = {
-        "total_hard_bounces": len(all_hard_bounces),
-        "blacklist_related": len(bounces_to_fix),
-        "fixed": fixed,
-        "unique_emails_fixed": len(affected_emails),
-        "subscribers_unblocked": subscribers_unblocked,
-        "errors": errors,
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-    print(f"[BounceScanner] Fix complete: {fixed} bounces deleted, "
-          f"{subscribers_unblocked} subscribers unblocked, {errors} errors")
-    return result
+            print(f"[BounceScanner] Found {len(all_hard_bounces)} total hard bounces")
+
+            fix_progress.update(
+                phase="identifying",
+                current=0, total=len(all_hard_bounces),
+                message=f"Scanning {len(all_hard_bounces)} hard bounces for blacklist keywords...",
+            )
+            bounces_to_fix = []
+            for i, b in enumerate(all_hard_bounces, 1):
+                meta = b.get("meta", {})
+                classify_reason = str(meta.get("classify_reason", ""))
+                meta_str = str(meta)
+                if BLACKLIST_PATTERN.search(classify_reason) or BLACKLIST_PATTERN.search(meta_str):
+                    bounces_to_fix.append(b)
+                if i % 50 == 0 or i == len(all_hard_bounces):
+                    fix_progress.update(
+                        current=i,
+                        message=f"Scanned {i}/{len(all_hard_bounces)} — {len(bounces_to_fix)} matched",
+                    )
+
+            print(f"[BounceScanner] {len(bounces_to_fix)} hard bounces identified as blacklist-related")
+
+            if not bounces_to_fix:
+                result = {
+                    "total_hard_bounces": len(all_hard_bounces),
+                    "blacklist_related": 0,
+                    "reclassified": 0,
+                    "deleted_no_soft": 0,
+                    "unique_subscribers_affected": 0,
+                    "subscribers_unblocked": 0,
+                    "errors": 0,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                fix_progress.update(
+                    status="done", phase="done",
+                    current=0, total=0,
+                    message="No blacklist-related bounces found",
+                    result=result,
+                    finished_at=datetime.utcnow().isoformat(),
+                )
+                return result
+
+            total_fix = len(bounces_to_fix)
+            fix_progress.update(
+                phase="reclassifying",
+                current=0, total=total_fix,
+                message=f"Reclassifying {total_fix} blacklist bounces as soft (concurrency={_FIX_CONCURRENCY})...",
+            )
+            reclassified = 0       # delete + soft-create both succeeded
+            deleted_no_soft = 0    # delete ok but soft-create failed or skipped
+            errors = 0             # delete itself failed
+            completed = 0
+            affected_sub_ids: set[int] = set()
+            rec_sem = asyncio.Semaphore(_FIX_CONCURRENCY)
+
+            async def _reclassify_one(bounce):
+                nonlocal reclassified, deleted_no_soft, errors, completed
+                async with rec_sem:
+                    bounce_id = bounce["id"]
+                    email_lower = (bounce.get("email") or "").lower()
+                    sub_id = bounce.get("subscriber_id") or (bounce.get("subscriber") or {}).get("id")
+                    campaign_id = (bounce.get("campaign") or {}).get("id") or 0
+
+                    try:
+                        await client.delete_bounce(bounce_id)
+                    except Exception as exc:
+                        errors += 1
+                        logger.error(f"Failed to delete bounce {bounce_id}: {exc}")
+                        completed += 1
+                        return
+
+                    if sub_id and campaign_id:
+                        try:
+                            await client.create_bounce(
+                                subscriber_id=sub_id,
+                                campaign_id=campaign_id,
+                                bounce_type="soft",
+                                source="api",
+                                meta={
+                                    "original_type": "hard",
+                                    "reclassified": True,
+                                    "reason": "blacklist bounce reclassified to soft",
+                                    "original_bounce_id": bounce_id,
+                                },
+                            )
+                            reclassified += 1
+                        except Exception as exc:
+                            deleted_no_soft += 1
+                            logger.warning(
+                                f"soft bounce create failed for bounce {bounce_id} "
+                                f"({email_lower}): {exc}"
+                            )
+                    else:
+                        deleted_no_soft += 1
+                        logger.warning(
+                            f"bounce {bounce_id} ({email_lower}) deleted but missing "
+                            f"subscriber_id/campaign_id — soft replacement skipped"
+                        )
+
+                    if sub_id:
+                        affected_sub_ids.add(sub_id)
+
+                    completed += 1
+                    if completed % 25 == 0 or completed == total_fix:
+                        fix_progress.update(
+                            current=completed,
+                            message=(
+                                f"Reclassified {reclassified}/{total_fix} "
+                                f"(deleted-only: {deleted_no_soft}, errors: {errors})"
+                            ),
+                        )
+
+            await asyncio.gather(*(_reclassify_one(b) for b in bounces_to_fix))
+            print(
+                f"[BounceScanner] Reclassified {reclassified} hard→soft "
+                f"(deleted-only: {deleted_no_soft}, errors: {errors})"
+            )
+
+            total_subs = len(affected_sub_ids)
+            fix_progress.update(
+                phase="unblocking",
+                current=0, total=total_subs,
+                message=f"Checking {total_subs} subscribers for unblocking...",
+            )
+            subscribers_unblocked = 0
+            u_completed = 0
+            unblock_sem = asyncio.Semaphore(_FIX_CONCURRENCY)
+
+            async def _unblock_one(sub_id):
+                nonlocal subscribers_unblocked, u_completed
+                async with unblock_sem:
+                    try:
+                        resp = await client.get_subscriber(sub_id)
+                        sub = resp.get("data") or resp
+                        if sub.get("status") == "blocklisted":
+                            await client.update_subscriber(sub_id, {
+                                "email": sub["email"],
+                                "name": sub.get("name", ""),
+                                "status": "enabled",
+                                "lists": [l["id"] for l in sub.get("lists", [])],
+                                "attribs": sub.get("attribs", {}),
+                            })
+                            subscribers_unblocked += 1
+                    except Exception as exc:
+                        logger.error(f"Failed to unblock subscriber {sub_id}: {exc}")
+                    u_completed += 1
+                    if u_completed % 25 == 0 or u_completed == total_subs:
+                        fix_progress.update(
+                            current=u_completed,
+                            message=f"Processed {u_completed}/{total_subs} — {subscribers_unblocked} unblocked",
+                        )
+
+            await asyncio.gather(*(_unblock_one(s) for s in affected_sub_ids))
+
+            result = {
+                "total_hard_bounces": len(all_hard_bounces),
+                "blacklist_related": total_fix,
+                "reclassified": reclassified,
+                "deleted_no_soft": deleted_no_soft,
+                "unique_subscribers_affected": total_subs,
+                "subscribers_unblocked": subscribers_unblocked,
+                "errors": errors,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            fix_progress.update(
+                status="done", phase="done",
+                current=total_subs, total=total_subs,
+                message=(
+                    f"Complete: {reclassified} reclassified hard→soft, "
+                    f"{subscribers_unblocked} unblocked"
+                ),
+                result=result,
+                finished_at=datetime.utcnow().isoformat(),
+            )
+            print(
+                f"[BounceScanner] Fix complete: {reclassified} reclassified hard→soft, "
+                f"{deleted_no_soft} deleted-only, {subscribers_unblocked} unblocked, "
+                f"{errors} errors"
+            )
+            return result
+
+        except Exception as e:
+            logger.error(f"fix_existing_hard_bounces failed: {e}", exc_info=True)
+            fix_progress.update(
+                status="error", phase="error",
+                message=f"Error: {e}",
+                finished_at=datetime.utcnow().isoformat(),
+            )
+            return {"error": str(e)}

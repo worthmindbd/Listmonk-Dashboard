@@ -95,13 +95,37 @@ const App = {
     // ── Modal / Confirm ──────────────────────────────────
     _modalResolve: null,
 
+    escapeHtml(s) {
+        if (s == null) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    },
+
+    _resetModalButtons() {
+        const cancelBtn = document.getElementById('modalCancel');
+        const confirmBtn = document.getElementById('modalConfirm');
+        if (cancelBtn) cancelBtn.style.display = '';
+        if (confirmBtn) {
+            confirmBtn.style.display = '';
+            confirmBtn.textContent = 'Confirm';
+            confirmBtn.className = 'btn btn-danger';
+            confirmBtn.onclick = null;
+        }
+    },
+
     confirm(title, message) {
         return new Promise((resolve) => {
             this._modalResolve = resolve;
             document.getElementById('modalTitle').textContent = title;
-            document.getElementById('modalBody').innerHTML = `<p>${message}</p>`;
+            document.getElementById('modalBody').innerHTML = `<p>${this.escapeHtml(message)}</p>`;
+            this._resetModalButtons();
             document.getElementById('modalOverlay').style.display = 'flex';
             document.getElementById('modalConfirm').onclick = () => {
+                this._modalResolve = null;
                 this.closeModal();
                 resolve(true);
             };
@@ -110,10 +134,67 @@ const App = {
 
     closeModal() {
         document.getElementById('modalOverlay').style.display = 'none';
+        this._resetModalButtons();
         if (this._modalResolve) {
             this._modalResolve(false);
             this._modalResolve = null;
         }
+    },
+
+    showProgress(title, message) {
+        this._modalResolve = null;
+        document.getElementById('modalTitle').textContent = title;
+        document.getElementById('modalBody').innerHTML = `
+            <p>${this.escapeHtml(message)}</p>
+            <div id="progressPhase" style="margin-top:14px;font-weight:600;color:var(--text-primary)">Starting...</div>
+            <div style="margin-top:8px;background:var(--bg-secondary);border-radius:8px;height:20px;overflow:hidden;border:1px solid var(--border)">
+                <div id="progressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#3498db,#2ecc71);transition:width 0.3s ease"></div>
+            </div>
+            <div id="progressStats" style="margin-top:8px;font-size:0.9rem;color:var(--text-secondary);text-align:center">0 / 0</div>
+            <div id="progressMessage" style="margin-top:8px;font-size:0.85rem;color:var(--text-secondary);font-family:monospace;word-break:break-word"></div>
+        `;
+        document.getElementById('modalCancel').style.display = 'none';
+        document.getElementById('modalConfirm').style.display = 'none';
+        document.getElementById('modalOverlay').style.display = 'flex';
+    },
+
+    updateProgress(progress) {
+        const phaseEl = document.getElementById('progressPhase');
+        const barEl = document.getElementById('progressBar');
+        const statsEl = document.getElementById('progressStats');
+        const msgEl = document.getElementById('progressMessage');
+        if (!phaseEl || !barEl) return;
+        const phaseLabels = {
+            starting: 'Starting...',
+            fetching: 'Fetching hard bounces',
+            identifying: 'Identifying blacklist bounces',
+            reclassifying: 'Reclassifying hard → soft',
+            unblocking: 'Unblocking subscribers',
+            done: 'Complete',
+            error: 'Error',
+        };
+        phaseEl.textContent = phaseLabels[progress.phase] || progress.phase || '';
+        const pct = progress.total > 0
+            ? Math.min(100, Math.round((progress.current / progress.total) * 100))
+            : (progress.status === 'done' ? 100 : 0);
+        barEl.style.width = pct + '%';
+        statsEl.textContent = progress.total > 0
+            ? `${progress.current} / ${progress.total} (${pct}%)`
+            : `${progress.current}`;
+        if (msgEl) msgEl.textContent = progress.message || '';
+    },
+
+    showResult(title, bodyHtml) {
+        this._modalResolve = null;
+        document.getElementById('modalTitle').textContent = title;
+        document.getElementById('modalBody').innerHTML = bodyHtml;
+        document.getElementById('modalCancel').style.display = 'none';
+        const confirmBtn = document.getElementById('modalConfirm');
+        confirmBtn.style.display = '';
+        confirmBtn.textContent = 'OK';
+        confirmBtn.className = 'btn btn-primary';
+        confirmBtn.onclick = () => this.closeModal();
+        document.getElementById('modalOverlay').style.display = 'flex';
     },
 
     // ── Pagination ───────────────────────────────────────
@@ -442,40 +523,103 @@ const Bounces = {
         if (!await App.confirm('Fix Blacklist Bounces',
             'This will scan all hard bounces, find ones caused by IP blacklisting (Spamhaus etc.), ' +
             'reclassify them as soft bounces, and unblock the affected subscribers. Continue?')) return;
-        App.toast('Fixing blacklist bounces... this may take a while', 'info');
+
+        App.showProgress('Fix Blacklist Bounces',
+            'The backend is working through your hard bounces. Progress updates live — you can leave this tab open.');
+
         try {
-            const result = await API.post('/api/bounce-scanner/fix');
-            if (result.error) {
-                App.toast(`Error: ${result.error}`, 'error');
+            const startResp = await API.post('/api/bounce-scanner/fix');
+            console.log('[BounceScanner] start response:', startResp);
+            if (startResp && startResp.already_running) {
+                App.toast('A fix is already running — showing live progress', 'info');
+            } else if (startResp && startResp.started === false) {
+                App.showResult('Fix Blacklist Bounces — Error',
+                    `<p style="color:#e74c3c">${App.escapeHtml(startResp.message || 'Failed to start')}</p>`);
                 return;
             }
-            App.toast(
-                `Fixed ${result.fixed || 0} bounces (${result.unique_emails_fixed || 0} emails), ` +
-                `${result.subscribers_unblocked || 0} subscribers unblocked`,
-                'success'
-            );
+
+            const final = await this._pollFixProgress();
+            console.log('[BounceScanner] final progress:', final);
+            if (final.status === 'error') {
+                App.showResult('Fix Blacklist Bounces — Failed',
+                    `<p style="color:#e74c3c">${App.escapeHtml(final.message || 'Unknown error')}</p>`);
+                return;
+            }
+            const r = final.result || {};
+            App.showResult('Fix Blacklist Bounces — Done', `
+                <ul style="line-height:1.8">
+                    <li>Total hard bounces scanned: <strong>${r.total_hard_bounces || 0}</strong></li>
+                    <li>Blacklist-related: <strong>${r.blacklist_related || 0}</strong></li>
+                    <li>Reclassified hard → soft: <strong>${r.reclassified || 0}</strong></li>
+                    <li>Deleted without soft replacement: <strong>${r.deleted_no_soft || 0}</strong></li>
+                    <li>Unique subscribers affected: <strong>${r.unique_subscribers_affected || 0}</strong></li>
+                    <li>Subscribers unblocked: <strong>${r.subscribers_unblocked || 0}</strong></li>
+                    <li>Errors: <strong>${r.errors || 0}</strong></li>
+                </ul>
+            `);
             this.render();
         } catch (err) {
-            App.toast(`Fix failed: ${err.message || ''}`, 'error');
+            console.error('[BounceScanner] fix failed:', err);
+            App.showResult('Fix Blacklist Bounces — Failed',
+                `<p style="color:#e74c3c">${App.escapeHtml(err.message || 'Unknown error')}</p>`);
+        }
+    },
+
+    async _pollFixProgress() {
+        const startTime = Date.now();
+        const MAX_DURATION_MS = 30 * 60 * 1000;
+        const MAX_CONSECUTIVE_ERRORS = 10;
+        let consecutiveErrors = 0;
+        while (true) {
+            if (Date.now() - startTime > MAX_DURATION_MS) {
+                return { status: 'error', message: 'Polling timed out after 30 minutes — check server logs' };
+            }
+            await new Promise(r => setTimeout(r, 800));
+            let progress;
+            try {
+                progress = await API.get('/api/bounce-scanner/fix-progress');
+                consecutiveErrors = 0;
+            } catch (err) {
+                consecutiveErrors++;
+                console.error('[BounceScanner] progress poll failed:', err);
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    return { status: 'error', message: `Polling failed after ${MAX_CONSECUTIVE_ERRORS} consecutive errors` };
+                }
+                continue;
+            }
+            App.updateProgress(progress);
+            if (progress.status === 'done' || progress.status === 'error') {
+                return progress;
+            }
         }
     },
 
     async scanBounceMail() {
         console.log('[BounceScanner] scanBounceMail clicked');
-        App.toast('Scanning bounce mailbox...', 'info');
+        App.showProgress('Scan Bounce Mailbox',
+            'Connecting to the bounce IMAP mailbox and scanning recent messages. Please wait...');
         try {
             const result = await API.post('/api/bounce-scanner/scan');
-            if (result.error) {
-                App.toast(`Error: ${result.error}`, 'error');
+            console.log('[BounceScanner] scan result:', result);
+            if (result && result.error) {
+                App.showResult('Scan Bounce Mailbox — Error',
+                    `<p style="color:#e74c3c">${App.escapeHtml(result.error)}</p>`);
                 return;
             }
-            App.toast(
-                `Scanned ${result.scanned || 0} emails, fixed ${result.fixed || 0} blacklist bounces`,
-                'success'
-            );
-            if (result.fixed > 0) this.render();
+            const r = result || {};
+            App.showResult('Scan Bounce Mailbox — Done', `
+                <ul style="line-height:1.8">
+                    <li>Emails scanned: <strong>${r.scanned || 0}</strong></li>
+                    <li>Blacklist bounces fixed: <strong>${r.fixed || 0}</strong></li>
+                    <li>Errors: <strong>${r.errors || 0}</strong></li>
+                    ${r.message ? `<li>${App.escapeHtml(r.message)}</li>` : ''}
+                </ul>
+            `);
+            if (r.fixed > 0) this.render();
         } catch (err) {
-            App.toast(`Scan failed: ${err.message || ''}`, 'error');
+            console.error('[BounceScanner] scan failed:', err);
+            App.showResult('Scan Bounce Mailbox — Failed',
+                `<p style="color:#e74c3c">${App.escapeHtml(err.message || 'Unknown error')}</p>`);
         }
     },
 };

@@ -18,7 +18,11 @@ from app.services.campaign_scheduler import (
 )
 from app.services.imap_unsubscribe import scan_and_unsubscribe
 from app.services.link_unsubscribe import scan_link_unsubscribes
-from app.services.bounce_scanner import scan_bounce_mailbox, fix_existing_hard_bounces
+from app.services.bounce_scanner import (
+    scan_bounce_mailbox,
+    fix_existing_hard_bounces,
+    fix_progress as bounce_fix_progress,
+)
 from app.auth import verify_session, create_session, clear_session, check_credentials
 from app.routers import subscribers, lists, campaigns, templates, bounces, converter, unsubscribes
 
@@ -252,8 +256,36 @@ async def bounce_scan_now():
 
 @app.post("/api/bounce-scanner/fix")
 async def bounce_fix_existing():
-    """One-time fix: reclassify all existing blacklist hard bounces to soft."""
-    try:
-        return await fix_existing_hard_bounces(listmonk)
-    except Exception as e:
-        return {"error": str(e)}
+    """Start a background fix run and return immediately. Poll /fix-progress."""
+    # Check-and-set is atomic here: FastAPI endpoints run on the asyncio loop
+    # and there are no awaits between the read and the write, so two concurrent
+    # POSTs cannot both observe "idle" and race past this guard.
+    if bounce_fix_progress.get("status") == "running":
+        return {"started": False, "already_running": True,
+                "message": "A fix is already in progress"}
+    bounce_fix_progress["status"] = "running"
+    bounce_fix_progress["phase"] = "starting"
+    bounce_fix_progress["message"] = "Queued..."
+    bounce_fix_progress["current"] = 0
+    bounce_fix_progress["total"] = 0
+    bounce_fix_progress["result"] = None
+    bounce_fix_progress["finished_at"] = None
+
+    async def _run():
+        try:
+            await fix_existing_hard_bounces(listmonk)
+        except Exception as e:
+            logger.error(f"bounce fix task failed: {e}", exc_info=True)
+            bounce_fix_progress["status"] = "error"
+            bounce_fix_progress["phase"] = "error"
+            bounce_fix_progress["message"] = f"Error: {e}"
+            bounce_fix_progress["finished_at"] = datetime.now(ZoneInfo("UTC")).isoformat()
+
+    asyncio.create_task(_run())
+    return {"started": True}
+
+
+@app.get("/api/bounce-scanner/fix-progress")
+async def bounce_fix_progress_endpoint():
+    """Return current progress of the running (or last) fix operation."""
+    return dict(bounce_fix_progress)
