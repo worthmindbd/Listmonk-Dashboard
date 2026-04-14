@@ -246,16 +246,16 @@ async def scheduler_run_now():
 # ── Bounce Scanner Endpoints ─────────────────────────────
 
 @app.post("/api/bounce-scanner/scan")
-async def bounce_scan_now():
+async def bounce_scan_now(campaign_id: int | None = None):
     """Manually trigger a bounce IMAP scan for blacklist bounces."""
     try:
-        return await scan_bounce_mailbox(listmonk)
+        return await scan_bounce_mailbox(listmonk, campaign_id=campaign_id)
     except Exception as e:
         return {"error": str(e)}
 
 
 @app.post("/api/bounce-scanner/fix")
-async def bounce_fix_existing():
+async def bounce_fix_existing(campaign_id: int | None = None):
     """Start a background fix run and return immediately. Poll /fix-progress."""
     # Check-and-set is atomic here: FastAPI endpoints run on the asyncio loop
     # and there are no awaits between the read and the write, so two concurrent
@@ -270,10 +270,11 @@ async def bounce_fix_existing():
     bounce_fix_progress["total"] = 0
     bounce_fix_progress["result"] = None
     bounce_fix_progress["finished_at"] = None
+    bounce_fix_progress["campaign_id"] = campaign_id
 
     async def _run():
         try:
-            await fix_existing_hard_bounces(listmonk)
+            await fix_existing_hard_bounces(listmonk, campaign_id=campaign_id)
         except Exception as e:
             logger.error(f"bounce fix task failed: {e}", exc_info=True)
             bounce_fix_progress["status"] = "error"
@@ -282,7 +283,7 @@ async def bounce_fix_existing():
             bounce_fix_progress["finished_at"] = datetime.now(ZoneInfo("UTC")).isoformat()
 
     asyncio.create_task(_run())
-    return {"started": True}
+    return {"started": True, "campaign_id": campaign_id}
 
 
 @app.get("/api/bounce-scanner/fix-progress")

@@ -186,13 +186,21 @@ def is_blacklist_bounce(body: str, subject: str = "") -> bool:
     return bool(BLACKLIST_PATTERN.search(text))
 
 
-async def scan_bounce_mailbox(client: ListMonkClient) -> dict:
+async def scan_bounce_mailbox(
+    client: ListMonkClient,
+    campaign_id: Optional[int] = None,
+) -> dict:
     """
     Scan the bounce IMAP mailbox for blacklist-related bounces.
     For any hard bounces caused by IP blacklisting:
     - Delete the hard bounce
     - Create a soft bounce instead
     - Unblock the subscriber
+
+    If `campaign_id` is provided, only reclassify hard bounces for that
+    specific campaign (bounces for other campaigns are left untouched, and
+    the subscriber is only unblocked if the only remaining hard bounces were
+    for the filtered campaign).
     """
     if _scan_lock.locked():
         return {"scanned": 0, "fixed": 0, "errors": 0,
@@ -262,7 +270,8 @@ async def scan_bounce_mailbox(client: ListMonkClient) -> dict:
                     # Find hard bounce records for this email
                     await _fix_subscriber_bounces(
                         client, subscriber, recipient,
-                        f"Blacklist bounce: {subject[:100]}"
+                        f"Blacklist bounce: {subject[:100]}",
+                        campaign_id=campaign_id,
                     )
                     fixed += 1
                     fixed_emails.append(recipient)
@@ -295,10 +304,14 @@ async def scan_bounce_mailbox(client: ListMonkClient) -> dict:
 async def _fix_subscriber_bounces(client: ListMonkClient,
                                    subscriber: dict,
                                    email_addr: str,
-                                   reason: str) -> bool:
+                                   reason: str,
+                                   campaign_id: Optional[int] = None) -> bool:
     """
     For a given subscriber, find hard bounce records, delete them,
     create soft bounces, and unblock the subscriber.
+
+    If `campaign_id` is provided, only reclassify hard bounces for that
+    specific campaign.
     """
     sub_id = subscriber["id"]
 
@@ -306,7 +319,7 @@ async def _fix_subscriber_bounces(client: ListMonkClient,
     page = 1
     hard_bounces = []
     while True:
-        result = await client.get_bounces(page, 100)
+        result = await client.get_bounces(page, 100, campaign_id=campaign_id)
         data = result.get("data", {})
         results = data.get("results", [])
         if not results:
@@ -362,11 +375,17 @@ async def _fix_subscriber_bounces(client: ListMonkClient,
     return True
 
 
-async def fix_existing_hard_bounces(client: ListMonkClient) -> dict:
+async def fix_existing_hard_bounces(
+    client: ListMonkClient,
+    campaign_id: Optional[int] = None,
+) -> dict:
     """
     Reclassify hard bounces caused by IP blacklisting (Spamhaus etc.) as soft.
     Checks the classify_reason in bounce meta for policy rejection codes
     (5.7.1 etc.) and blacklist keywords.
+
+    If `campaign_id` is provided, only bounces for that campaign are considered.
+    Otherwise operates on bounces across all campaigns.
 
     For each matching hard bounce:
     1. Delete the hard bounce record from ListMonk
@@ -392,15 +411,16 @@ async def fix_existing_hard_bounces(client: ListMonkClient) -> dict:
         print("[BounceScanner] Starting fix for existing hard bounces...")
 
         try:
+            scope_label = f"campaign {campaign_id}" if campaign_id else "all campaigns"
             fix_progress.update(
                 phase="fetching", current=0, total=0,
-                message="Fetching hard bounces from ListMonk...",
+                message=f"Fetching hard bounces from ListMonk ({scope_label})...",
             )
             all_hard_bounces = []
             page = 1
             total_bounces = 0
             while True:
-                result = await client.get_bounces(page, 500)
+                result = await client.get_bounces(page, 500, campaign_id=campaign_id)
                 data = result.get("data", {})
                 results = data.get("results", [])
                 if not results:
@@ -412,13 +432,13 @@ async def fix_existing_hard_bounces(client: ListMonkClient) -> dict:
                 fix_progress.update(
                     current=min(page * 500, total_bounces),
                     total=total_bounces,
-                    message=f"Fetched page {page} ({len(all_hard_bounces)} hard bounces so far)",
+                    message=f"Fetched page {page} ({len(all_hard_bounces)} hard bounces so far, {scope_label})",
                 )
                 if page * 500 >= total_bounces:
                     break
                 page += 1
 
-            print(f"[BounceScanner] Found {len(all_hard_bounces)} total hard bounces")
+            print(f"[BounceScanner] Found {len(all_hard_bounces)} total hard bounces ({scope_label})")
 
             fix_progress.update(
                 phase="identifying",

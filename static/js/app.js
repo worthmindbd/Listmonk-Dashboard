@@ -424,19 +424,13 @@ const Bounces = {
                 : 'All campaigns';
 
             App.setActions(`
-                <button class="btn btn-sm" onclick="Bounces.fixBlacklistBounces()">Fix Blacklist Bounces</button>
+                <button class="btn btn-sm btn-primary" onclick="Bounces.fixBlacklistBounces()">Fix Blacklist Bounces</button>
                 <button class="btn btn-sm" onclick="Bounces.scanBounceMail()">Scan Bounce Mail</button>
                 <button class="btn btn-sm" onclick="Bounces.exportBounces()">Export CSV</button>
                 <button class="btn btn-sm btn-danger" onclick="Bounces.deleteAll()">Delete All Bounces</button>
             `);
 
             let html = `
-                <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;padding:12px;background:var(--bg-secondary);border-radius:8px">
-                    <button class="btn btn-sm btn-primary" onclick="Bounces.fixBlacklistBounces()">Fix Blacklist Bounces</button>
-                    <button class="btn btn-sm" onclick="Bounces.scanBounceMail()">Scan Bounce Mail</button>
-                    <span style="flex:1"></span>
-                    <span style="color:var(--text-secondary);font-size:0.85rem">${App.formatNumber(total)} bounce records</span>
-                </div>
                 <div class="search-bar">
                     <select id="bounceCampFilter" onchange="Bounces.filterCampaign(this.value)" style="width:auto;min-width:250px">
                         <option value="0" ${!this.campaignFilter ? 'selected' : ''}>All Campaigns</option>
@@ -491,21 +485,40 @@ const Bounces = {
         this.render();
     },
 
+    _campaignLabel() {
+        if (!this.campaignFilter) return 'All Campaigns';
+        return this.campaigns.find(c => c.id === this.campaignFilter)?.name
+            || `#${this.campaignFilter}`;
+    },
+
+    _campaignQuery() {
+        return this.campaignFilter ? `?campaign_id=${this.campaignFilter}` : '';
+    },
+
     async deleteAll() {
         const label = this.campaignFilter
-            ? `bounces for "${this.campaigns.find(c => c.id === this.campaignFilter)?.name}"`
+            ? `bounces for "${this._campaignLabel()}"`
             : 'ALL bounce records';
-        if (await App.confirm('Delete Bounces', `This will permanently delete ${label}. Continue?`)) {
-            await API.del('/api/bounces');
-            App.toast('Bounces deleted', 'success');
+        if (!await App.confirm('Delete Bounces', `This will permanently delete ${label}. Continue?`)) return;
+        App.showProgress('Delete Bounces', `Deleting ${label}. Please wait...`);
+        try {
+            const result = await API.del(`/api/bounces${this._campaignQuery()}`);
+            App.showResult('Delete Bounces — Done', `
+                <ul style="line-height:1.8">
+                    <li>Deleted: <strong>${result?.deleted || 0}</strong></li>
+                    ${result?.errors ? `<li>Errors: <strong>${result.errors}</strong></li>` : ''}
+                </ul>
+            `);
             this.render();
+        } catch (err) {
+            App.showResult('Delete Bounces — Failed',
+                `<p style="color:#e74c3c">${App.escapeHtml(err.message || 'Unknown error')}</p>`);
         }
     },
 
     async exportBounces() {
-        const campParam = this.campaignFilter ? `?campaign_id=${this.campaignFilter}` : '';
         try {
-            const result = await API.get(`/api/bounces/export${campParam}`);
+            const result = await API.get(`/api/bounces/export${this._campaignQuery()}`);
             if (result.blob) {
                 const suffix = this.campaignFilter
                     ? `_${this.campaigns.find(c => c.id === this.campaignFilter)?.name?.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) || this.campaignFilter}`
@@ -520,15 +533,16 @@ const Bounces = {
 
     async fixBlacklistBounces() {
         console.log('[BounceScanner] fixBlacklistBounces clicked');
+        const scope = this.campaignFilter ? `"${this._campaignLabel()}"` : 'ALL campaigns';
         if (!await App.confirm('Fix Blacklist Bounces',
-            'This will scan all hard bounces, find ones caused by IP blacklisting (Spamhaus etc.), ' +
-            'reclassify them as soft bounces, and unblock the affected subscribers. Continue?')) return;
+            `This will scan hard bounces in ${scope}, find ones caused by IP blacklisting ` +
+            '(Spamhaus etc.), reclassify them as soft bounces, and unblock the affected subscribers. Continue?')) return;
 
         App.showProgress('Fix Blacklist Bounces',
-            'The backend is working through your hard bounces. Progress updates live — you can leave this tab open.');
+            `Scanning hard bounces in ${scope}. Progress updates live — you can leave this tab open.`);
 
         try {
-            const startResp = await API.post('/api/bounce-scanner/fix');
+            const startResp = await API.post(`/api/bounce-scanner/fix${this._campaignQuery()}`);
             console.log('[BounceScanner] start response:', startResp);
             if (startResp && startResp.already_running) {
                 App.toast('A fix is already running — showing live progress', 'info');
@@ -596,10 +610,11 @@ const Bounces = {
 
     async scanBounceMail() {
         console.log('[BounceScanner] scanBounceMail clicked');
+        const scope = this.campaignFilter ? `"${this._campaignLabel()}"` : 'ALL campaigns';
         App.showProgress('Scan Bounce Mailbox',
-            'Connecting to the bounce IMAP mailbox and scanning recent messages. Please wait...');
+            `Connecting to the bounce IMAP mailbox and scanning recent messages (scope: ${scope}). Please wait...`);
         try {
-            const result = await API.post('/api/bounce-scanner/scan');
+            const result = await API.post(`/api/bounce-scanner/scan${this._campaignQuery()}`);
             console.log('[BounceScanner] scan result:', result);
             if (result && result.error) {
                 App.showResult('Scan Bounce Mailbox — Error',
