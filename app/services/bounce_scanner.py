@@ -59,6 +59,7 @@ BLACKLIST_KEYWORDS = [
     "554 5.7.1",  # Common SMTP code for blacklist rejections
     "550 5.7.1",  # Rejected by policy
     "521 5.2.1",  # Blocked
+    "5.7.1",      # SMTP enhanced status code (policy rejection/blacklist)
 ]
 
 BLACKLIST_PATTERN = re.compile(
@@ -345,55 +346,17 @@ async def _fix_subscriber_bounces(client: ListMonkClient,
 
 async def fix_existing_hard_bounces(client: ListMonkClient) -> dict:
     """
-    One-time fix: Scan ALL existing hard bounce records in ListMonk.
-    Check the bounce meta/source for blacklist keywords.
-    Also scan the bounce IMAP mailbox and cross-reference.
+    Fix hard bounces caused by IP blacklisting (Spamhaus etc.).
+    Checks the classify_reason in bounce meta for policy rejection codes
+    (5.7.1 etc.) and blacklist keywords.
 
-    For any hard bounces that match blacklist patterns:
-    - Delete the hard bounce
-    - Create a soft bounce
-    - Unblock the subscriber
+    For matching hard bounces:
+    - Delete the hard bounce record
+    - Unblock the subscriber (re-enable)
     """
     print("[BounceScanner] Starting fix for existing hard bounces...")
 
-    # Step 1: Collect all blacklist-affected emails from IMAP
-    blacklist_emails = set()
-    conn = connect_bounce_imap()
-    if conn:
-        try:
-            conn.select("INBOX")
-            # Search all emails (no date filter for the fix)
-            status, msg_ids = conn.search(None, "ALL")
-            if status == "OK" and msg_ids[0]:
-                ids = msg_ids[0].split()
-                print(f"[BounceScanner] Scanning {len(ids)} emails in bounce mailbox for blacklist patterns")
-                for msg_id in ids:
-                    try:
-                        status, data = conn.fetch(msg_id, "(RFC822)")
-                        if status != "OK":
-                            continue
-                        raw_email = data[0][1]
-                        msg = email.message_from_bytes(raw_email, policy=email.policy.default)
-                        subject = msg.get("Subject", "")
-                        body = _extract_body(msg)
-
-                        if is_blacklist_bounce(body, subject):
-                            recipient = _extract_bounced_recipient(msg, body)
-                            if recipient:
-                                blacklist_emails.add(recipient.lower())
-                    except Exception:
-                        continue
-        except Exception as e:
-            logger.error(f"IMAP scan error during fix: {e}")
-        finally:
-            try:
-                conn.logout()
-            except Exception:
-                pass
-
-    print(f"[BounceScanner] Found {len(blacklist_emails)} emails affected by blacklist in IMAP")
-
-    # Step 2: Fetch ALL hard bounces from ListMonk
+    # Step 1: Fetch ALL hard bounces from ListMonk
     all_hard_bounces = []
     page = 1
     while True:
@@ -409,85 +372,81 @@ async def fix_existing_hard_bounces(client: ListMonkClient) -> dict:
             break
         page += 1
 
-    print(f"[BounceScanner] Found {len(all_hard_bounces)} total hard bounces in ListMonk")
+    print(f"[BounceScanner] Found {len(all_hard_bounces)} total hard bounces")
 
-    # Step 3: Identify which hard bounces to reclassify
+    # Step 2: Identify blacklist-related bounces by classify_reason
     bounces_to_fix = []
     for b in all_hard_bounces:
-        bounce_email = b.get("email", "").lower()
         meta = b.get("meta", {})
-        meta_str = str(meta) if meta else ""
+        classify_reason = str(meta.get("classify_reason", ""))
+        meta_str = str(meta)
 
-        # Match if: email is in IMAP blacklist set OR meta contains blacklist keywords
-        if bounce_email in blacklist_emails or BLACKLIST_PATTERN.search(meta_str):
+        # Match on classify_reason containing policy rejection codes
+        # or any blacklist keyword in the full meta
+        if BLACKLIST_PATTERN.search(classify_reason) or BLACKLIST_PATTERN.search(meta_str):
             bounces_to_fix.append(b)
 
     print(f"[BounceScanner] {len(bounces_to_fix)} hard bounces identified as blacklist-related")
 
-    # Step 4: Fix them — delete hard bounce, create soft, unblock subscriber
+    if not bounces_to_fix:
+        return {
+            "total_hard_bounces": len(all_hard_bounces),
+            "blacklist_related": 0,
+            "fixed": 0,
+            "unique_emails_fixed": 0,
+            "subscribers_unblocked": 0,
+            "errors": 0,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+    # Step 3: Delete the hard bounce records
     fixed = 0
     errors = 0
-    fixed_emails = set()
-    subscribers_unblocked = 0
+    affected_emails = set()
 
     for b in bounces_to_fix:
-        bounce_email = b.get("email", "").lower()
         try:
-            # Delete the hard bounce
             await client.delete_bounce(b["id"])
-
-            # Create soft bounce (best-effort)
-            campaign_id = b.get("campaign", {}).get("id", 0)
-            if campaign_id:
-                # Look up subscriber ID
-                try:
-                    sub_result = await client.get_subscribers(
-                        1, 1, f"subscribers.email = '{bounce_email}'"
-                    )
-                    subs = sub_result.get("data", {}).get("results", [])
-                    if subs:
-                        sub = subs[0]
-                        try:
-                            await client.create_bounce(
-                                subscriber_id=sub["id"],
-                                campaign_id=campaign_id,
-                                bounce_type="soft",
-                                source="api",
-                                meta={"original_type": "hard",
-                                      "reclassified": True,
-                                      "reason": "IP blacklist bounce"},
-                            )
-                        except Exception:
-                            pass  # Soft bounce creation is best-effort
-
-                        # Unblock if blocklisted
-                        if sub.get("status") == "blocklisted" and bounce_email not in fixed_emails:
-                            await client.update_subscriber(sub["id"], {
-                                "email": sub["email"],
-                                "name": sub.get("name", ""),
-                                "status": "enabled",
-                                "lists": [l["id"] for l in sub.get("lists", [])],
-                                "attribs": sub.get("attribs", {}),
-                            })
-                            subscribers_unblocked += 1
-                except Exception:
-                    pass
-
             fixed += 1
-            fixed_emails.add(bounce_email)
+            affected_emails.add(b.get("email", "").lower())
         except Exception as e:
             errors += 1
-            logger.error(f"Failed to fix bounce {b['id']} for {bounce_email}: {e}")
+            logger.error(f"Failed to delete bounce {b['id']}: {e}")
+
+    print(f"[BounceScanner] Deleted {fixed} hard bounce records")
+
+    # Step 4: Unblock all affected subscribers who are blocklisted
+    subscribers_unblocked = 0
+    for email_addr in affected_emails:
+        try:
+            sub_result = await client.get_subscribers(
+                1, 1, f"subscribers.email = '{email_addr}'"
+            )
+            subs = sub_result.get("data", {}).get("results", [])
+            if not subs:
+                continue
+            sub = subs[0]
+            if sub.get("status") == "blocklisted":
+                await client.update_subscriber(sub["id"], {
+                    "email": sub["email"],
+                    "name": sub.get("name", ""),
+                    "status": "enabled",
+                    "lists": [l["id"] for l in sub.get("lists", [])],
+                    "attribs": sub.get("attribs", {}),
+                })
+                subscribers_unblocked += 1
+        except Exception as e:
+            logger.error(f"Failed to unblock {email_addr}: {e}")
 
     result = {
         "total_hard_bounces": len(all_hard_bounces),
         "blacklist_related": len(bounces_to_fix),
         "fixed": fixed,
-        "unique_emails_fixed": len(fixed_emails),
+        "unique_emails_fixed": len(affected_emails),
         "subscribers_unblocked": subscribers_unblocked,
         "errors": errors,
         "timestamp": datetime.utcnow().isoformat(),
     }
-    print(f"[BounceScanner] Fix complete: {fixed} bounces reclassified, "
+    print(f"[BounceScanner] Fix complete: {fixed} bounces deleted, "
           f"{subscribers_unblocked} subscribers unblocked, {errors} errors")
     return result
