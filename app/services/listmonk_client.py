@@ -228,6 +228,19 @@ class ListMonkClient:
     async def delete_bounce(self, bounce_id: int) -> dict:
         return await self._request("DELETE", f"/api/bounces/{bounce_id}")
 
+    async def create_bounce(self, subscriber_id: int, campaign_id: int,
+                            bounce_type: str = "soft",
+                            source: str = "api",
+                            meta: dict = None) -> dict:
+        payload = {
+            "subscriber_id": subscriber_id,
+            "campaign_id": campaign_id,
+            "type": bounce_type,
+            "source": source,
+            "meta": meta or {},
+        }
+        return await self._request("POST", "/api/bounces", json=payload)
+
     async def delete_all_bounces(self) -> dict:
         return await self._request("DELETE", "/api/bounces", params={"all": "true"})
 

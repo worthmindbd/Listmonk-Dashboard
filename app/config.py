@@ -16,9 +16,20 @@ class Settings:
     imap_pass: str = os.getenv("IMAP_PASS", "")
     imap_use_ssl: bool = os.getenv("IMAP_USE_SSL", "true").lower() == "true"
 
+    # IMAP settings for bounce monitoring
+    bounce_imap_host: str = os.getenv("BOUNCE_IMAP_HOST", "")
+    bounce_imap_port: int = int(os.getenv("BOUNCE_IMAP_PORT", "993"))
+    bounce_imap_user: str = os.getenv("BOUNCE_IMAP_USER", "")
+    bounce_imap_pass: str = os.getenv("BOUNCE_IMAP_PASS", "")
+    bounce_imap_use_ssl: bool = os.getenv("BOUNCE_IMAP_USE_SSL", "true").lower() == "true"
+
     @property
     def imap_configured(self) -> bool:
         return bool(self.imap_host and self.imap_user and self.imap_pass)
+
+    @property
+    def bounce_imap_configured(self) -> bool:
+        return bool(self.bounce_imap_host and self.bounce_imap_user and self.bounce_imap_pass)
 
     @property
     def base_url(self) -> str:

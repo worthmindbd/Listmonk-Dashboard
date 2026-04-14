@@ -18,6 +18,7 @@ from app.services.campaign_scheduler import (
 )
 from app.services.imap_unsubscribe import scan_and_unsubscribe
 from app.services.link_unsubscribe import scan_link_unsubscribes
+from app.services.bounce_scanner import scan_bounce_mailbox, fix_existing_hard_bounces
 from app.auth import verify_session, create_session, clear_session, check_credentials
 from app.routers import subscribers, lists, campaigns, templates, bounces, converter, unsubscribes
 
@@ -26,9 +27,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 AUTO_UNBLOCK_INTERVAL = 6 * 60 * 60
 IMAP_SCAN_INTERVAL = 60 * 60  # 1 hour
+BOUNCE_SCAN_INTERVAL = 60 * 60  # 1 hour
 _auto_unblock_task = None
 _scheduler_task = None
 _imap_scan_task = None
+_bounce_scan_task = None
 
 
 # ── Auth Middleware ───────────────────────────────────────
@@ -70,9 +73,8 @@ async def auto_unblock_loop():
 
 
 async def imap_scan_loop():
-    """Scan IMAP inbox and ListMonk link unsubscribes every hour (no run on startup)."""
+    """Scan IMAP inbox and ListMonk link unsubscribes every hour, starting immediately on startup."""
     while True:
-        await asyncio.sleep(IMAP_SCAN_INTERVAL)
         try:
             imap_result = await scan_and_unsubscribe(listmonk)
             if imap_result.get("processed", 0) > 0:
@@ -85,20 +87,35 @@ async def imap_scan_loop():
                 logger.info(f"Link scan: {link_result['processed']} unsubscribe(s) processed")
         except Exception as e:
             logger.error(f"Link unsubscribe scan error: {e}")
+        await asyncio.sleep(IMAP_SCAN_INTERVAL)
+
+
+async def bounce_scan_loop():
+    """Scan bounce IMAP mailbox every hour for blacklist-related bounces."""
+    while True:
+        try:
+            result = await scan_bounce_mailbox(listmonk)
+            if result.get("fixed", 0) > 0:
+                logger.info(f"Bounce scan: {result['fixed']} blacklist bounce(s) reclassified")
+        except Exception as e:
+            logger.error(f"Bounce scan error: {e}")
+        await asyncio.sleep(BOUNCE_SCAN_INTERVAL)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _auto_unblock_task, _scheduler_task, _imap_scan_task
+    global _auto_unblock_task, _scheduler_task, _imap_scan_task, _bounce_scan_task
     await listmonk.start()
     _auto_unblock_task = asyncio.create_task(auto_unblock_loop())
     _scheduler_task = asyncio.create_task(scheduler_loop(listmonk))
     _imap_scan_task = asyncio.create_task(imap_scan_loop())
-    logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP scan (1h), link scan (1h)")
+    _bounce_scan_task = asyncio.create_task(bounce_scan_loop())
+    logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP+link scan (1h), bounce scan (1h)")
     yield
     _auto_unblock_task.cancel()
     _scheduler_task.cancel()
     _imap_scan_task.cancel()
+    _bounce_scan_task.cancel()
     await listmonk.close()
 
 
@@ -218,5 +235,25 @@ async def scheduler_run_now():
             "in_send_window": is_within_send_window(schedule),
             "auto_paused_campaigns": schedule.get("auto_paused_campaigns", []),
         }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── Bounce Scanner Endpoints ─────────────────────────────
+
+@app.post("/api/bounce-scanner/scan")
+async def bounce_scan_now():
+    """Manually trigger a bounce IMAP scan for blacklist bounces."""
+    try:
+        return await scan_bounce_mailbox(listmonk)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/bounce-scanner/fix")
+async def bounce_fix_existing():
+    """One-time fix: reclassify all existing blacklist hard bounces to soft."""
+    try:
+        return await fix_existing_hard_bounces(listmonk)
     except Exception as e:
         return {"error": str(e)}

@@ -343,6 +343,8 @@ const Bounces = {
                 : 'All campaigns';
 
             App.setActions(`
+                <button class="btn btn-sm" onclick="Bounces.fixBlacklistBounces()">Fix Blacklist Bounces</button>
+                <button class="btn btn-sm" onclick="Bounces.scanBounceMail()">Scan Bounce Mail</button>
                 <button class="btn btn-sm" onclick="Bounces.exportBounces()">Export CSV</button>
                 <button class="btn btn-sm btn-danger" onclick="Bounces.deleteAll()">Delete All Bounces</button>
             `);
@@ -426,6 +428,46 @@ const Bounces = {
             }
         } catch {
             App.toast('Export failed', 'error');
+        }
+    },
+
+    async fixBlacklistBounces() {
+        if (!await App.confirm('Fix Blacklist Bounces',
+            'This will scan all hard bounces, find ones caused by IP blacklisting (Spamhaus etc.), ' +
+            'reclassify them as soft bounces, and unblock the affected subscribers. Continue?')) return;
+        App.toast('Fixing blacklist bounces... this may take a while', 'info');
+        try {
+            const result = await API.post('/api/bounce-scanner/fix');
+            if (result.error) {
+                App.toast(`Error: ${result.error}`, 'error');
+                return;
+            }
+            App.toast(
+                `Fixed ${result.fixed || 0} bounces (${result.unique_emails_fixed || 0} emails), ` +
+                `${result.subscribers_unblocked || 0} subscribers unblocked`,
+                'success'
+            );
+            this.render();
+        } catch (err) {
+            App.toast(`Fix failed: ${err.message || ''}`, 'error');
+        }
+    },
+
+    async scanBounceMail() {
+        App.toast('Scanning bounce mailbox...', 'info');
+        try {
+            const result = await API.post('/api/bounce-scanner/scan');
+            if (result.error) {
+                App.toast(`Error: ${result.error}`, 'error');
+                return;
+            }
+            App.toast(
+                `Scanned ${result.scanned || 0} emails, fixed ${result.fixed || 0} blacklist bounces`,
+                'success'
+            );
+            if (result.fixed > 0) this.render();
+        } catch (err) {
+            App.toast(`Scan failed: ${err.message || ''}`, 'error');
         }
     },
 };
