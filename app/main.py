@@ -18,11 +18,7 @@ from app.services.campaign_scheduler import (
 )
 from app.services.imap_unsubscribe import scan_and_unsubscribe
 from app.services.link_unsubscribe import scan_link_unsubscribes
-from app.services.bounce_scanner import (
-    scan_bounce_mailbox,
-    fix_existing_hard_bounces,
-    fix_progress as bounce_fix_progress,
-)
+from app.services.bounce_ingest import ingest_bounce_mailbox
 from app.auth import verify_session, create_session, clear_session, check_credentials
 from app.routers import subscribers, lists, campaigns, templates, bounces, converter, unsubscribes
 
@@ -31,11 +27,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 AUTO_UNBLOCK_INTERVAL = 6 * 60 * 60
 IMAP_SCAN_INTERVAL = 60 * 60  # 1 hour
-BOUNCE_SCAN_INTERVAL = 60 * 60  # 1 hour
+BOUNCE_INGEST_INTERVAL = 60 * 60  # 1 hour
 _auto_unblock_task = None
 _scheduler_task = None
 _imap_scan_task = None
-_bounce_scan_task = None
+_bounce_ingest_task = None
 
 
 # ── Auth Middleware ───────────────────────────────────────
@@ -94,32 +90,35 @@ async def imap_scan_loop():
         await asyncio.sleep(IMAP_SCAN_INTERVAL)
 
 
-async def bounce_scan_loop():
-    """Scan bounce IMAP mailbox every hour for blacklist-related bounces."""
+async def bounce_ingest_loop():
+    """Ingest new bounces from the IMAP mailbox into ListMonk every hour."""
     while True:
         try:
-            result = await scan_bounce_mailbox(listmonk)
-            if result.get("fixed", 0) > 0:
-                logger.info(f"Bounce scan: {result['fixed']} blacklist bounce(s) reclassified")
+            result = await ingest_bounce_mailbox(listmonk)
+            if result.get("ingested", 0) > 0:
+                logger.info(
+                    f"Bounce ingest: {result['ingested']} ingested "
+                    f"(hard={result.get('hard', 0)}, soft={result.get('soft', 0)})"
+                )
         except Exception as e:
-            logger.error(f"Bounce scan error: {e}")
-        await asyncio.sleep(BOUNCE_SCAN_INTERVAL)
+            logger.error(f"Bounce ingest error: {e}")
+        await asyncio.sleep(BOUNCE_INGEST_INTERVAL)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _auto_unblock_task, _scheduler_task, _imap_scan_task, _bounce_scan_task
+    global _auto_unblock_task, _scheduler_task, _imap_scan_task, _bounce_ingest_task
     await listmonk.start()
     _auto_unblock_task = asyncio.create_task(auto_unblock_loop())
     _scheduler_task = asyncio.create_task(scheduler_loop(listmonk))
     _imap_scan_task = asyncio.create_task(imap_scan_loop())
-    _bounce_scan_task = asyncio.create_task(bounce_scan_loop())
-    logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP+link scan (1h), bounce scan (1h)")
+    _bounce_ingest_task = asyncio.create_task(bounce_ingest_loop())
+    logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP+link scan (1h), bounce ingest (1h)")
     yield
     _auto_unblock_task.cancel()
     _scheduler_task.cancel()
     _imap_scan_task.cancel()
-    _bounce_scan_task.cancel()
+    _bounce_ingest_task.cancel()
     await listmonk.close()
 
 
@@ -243,50 +242,3 @@ async def scheduler_run_now():
         return {"error": str(e)}
 
 
-# ── Bounce Scanner Endpoints ─────────────────────────────
-
-@app.post("/api/bounce-scanner/scan")
-async def bounce_scan_now(campaign_id: int | None = None):
-    """Manually trigger a bounce IMAP scan for blacklist bounces."""
-    try:
-        return await scan_bounce_mailbox(listmonk, campaign_id=campaign_id)
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.post("/api/bounce-scanner/fix")
-async def bounce_fix_existing(campaign_id: int | None = None):
-    """Start a background fix run and return immediately. Poll /fix-progress."""
-    # Check-and-set is atomic here: FastAPI endpoints run on the asyncio loop
-    # and there are no awaits between the read and the write, so two concurrent
-    # POSTs cannot both observe "idle" and race past this guard.
-    if bounce_fix_progress.get("status") == "running":
-        return {"started": False, "already_running": True,
-                "message": "A fix is already in progress"}
-    bounce_fix_progress["status"] = "running"
-    bounce_fix_progress["phase"] = "starting"
-    bounce_fix_progress["message"] = "Queued..."
-    bounce_fix_progress["current"] = 0
-    bounce_fix_progress["total"] = 0
-    bounce_fix_progress["result"] = None
-    bounce_fix_progress["finished_at"] = None
-    bounce_fix_progress["campaign_id"] = campaign_id
-
-    async def _run():
-        try:
-            await fix_existing_hard_bounces(listmonk, campaign_id=campaign_id)
-        except Exception as e:
-            logger.error(f"bounce fix task failed: {e}", exc_info=True)
-            bounce_fix_progress["status"] = "error"
-            bounce_fix_progress["phase"] = "error"
-            bounce_fix_progress["message"] = f"Error: {e}"
-            bounce_fix_progress["finished_at"] = datetime.now(ZoneInfo("UTC")).isoformat()
-
-    asyncio.create_task(_run())
-    return {"started": True, "campaign_id": campaign_id}
-
-
-@app.get("/api/bounce-scanner/fix-progress")
-async def bounce_fix_progress_endpoint():
-    """Return current progress of the running (or last) fix operation."""
-    return dict(bounce_fix_progress)

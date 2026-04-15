@@ -425,8 +425,6 @@ const Bounces = {
 
             App.setActions(`
                 <button class="btn btn-sm btn-primary" onclick="Bounces.ingestBounces()">Ingest New Bounces</button>
-                <button class="btn btn-sm" onclick="Bounces.fixBlacklistBounces()">Fix Blacklist Bounces</button>
-                <button class="btn btn-sm" onclick="Bounces.scanBounceMail()">Scan Bounce Mail</button>
                 <button class="btn btn-sm" onclick="Bounces.exportBounces()">Export CSV</button>
                 <button class="btn btn-sm btn-danger" onclick="Bounces.deleteAll()">Delete All Bounces</button>
             `);
@@ -532,83 +530,6 @@ const Bounces = {
         }
     },
 
-    async fixBlacklistBounces() {
-        console.log('[BounceScanner] fixBlacklistBounces clicked');
-        const scope = this.campaignFilter ? `"${this._campaignLabel()}"` : 'ALL campaigns';
-        if (!await App.confirm('Fix Blacklist Bounces',
-            `This will scan hard bounces in ${scope}, find ones caused by IP blacklisting ` +
-            '(Spamhaus etc.), reclassify them as soft bounces, and unblock the affected subscribers. Continue?')) return;
-
-        App.showProgress('Fix Blacklist Bounces',
-            `Scanning hard bounces in ${scope}. Progress updates live — you can leave this tab open.`);
-
-        try {
-            const startResp = await API.post(`/api/bounce-scanner/fix${this._campaignQuery()}`);
-            console.log('[BounceScanner] start response:', startResp);
-            if (startResp && startResp.already_running) {
-                App.toast('A fix is already running — showing live progress', 'info');
-            } else if (startResp && startResp.started === false) {
-                App.showResult('Fix Blacklist Bounces — Error',
-                    `<p style="color:#e74c3c">${App.escapeHtml(startResp.message || 'Failed to start')}</p>`);
-                return;
-            }
-
-            const final = await this._pollFixProgress();
-            console.log('[BounceScanner] final progress:', final);
-            if (final.status === 'error') {
-                App.showResult('Fix Blacklist Bounces — Failed',
-                    `<p style="color:#e74c3c">${App.escapeHtml(final.message || 'Unknown error')}</p>`);
-                return;
-            }
-            const r = final.result || {};
-            App.showResult('Fix Blacklist Bounces — Done', `
-                <ul style="line-height:1.8">
-                    <li>Total hard bounces scanned: <strong>${r.total_hard_bounces || 0}</strong></li>
-                    <li>Blacklist-related: <strong>${r.blacklist_related || 0}</strong></li>
-                    <li>Reclassified hard → soft: <strong>${r.reclassified || 0}</strong></li>
-                    <li>Deleted without soft replacement: <strong>${r.deleted_no_soft || 0}</strong></li>
-                    <li>Unique subscribers affected: <strong>${r.unique_subscribers_affected || 0}</strong></li>
-                    <li>Subscribers unblocked: <strong>${r.subscribers_unblocked || 0}</strong></li>
-                    <li>Errors: <strong>${r.errors || 0}</strong></li>
-                </ul>
-            `);
-            this.render();
-        } catch (err) {
-            console.error('[BounceScanner] fix failed:', err);
-            App.showResult('Fix Blacklist Bounces — Failed',
-                `<p style="color:#e74c3c">${App.escapeHtml(err.message || 'Unknown error')}</p>`);
-        }
-    },
-
-    async _pollFixProgress() {
-        const startTime = Date.now();
-        const MAX_DURATION_MS = 30 * 60 * 1000;
-        const MAX_CONSECUTIVE_ERRORS = 10;
-        let consecutiveErrors = 0;
-        while (true) {
-            if (Date.now() - startTime > MAX_DURATION_MS) {
-                return { status: 'error', message: 'Polling timed out after 30 minutes — check server logs' };
-            }
-            await new Promise(r => setTimeout(r, 800));
-            let progress;
-            try {
-                progress = await API.get('/api/bounce-scanner/fix-progress');
-                consecutiveErrors = 0;
-            } catch (err) {
-                consecutiveErrors++;
-                console.error('[BounceScanner] progress poll failed:', err);
-                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                    return { status: 'error', message: `Polling failed after ${MAX_CONSECUTIVE_ERRORS} consecutive errors` };
-                }
-                continue;
-            }
-            App.updateProgress(progress);
-            if (progress.status === 'done' || progress.status === 'error') {
-                return progress;
-            }
-        }
-    },
-
     async ingestBounces() {
         App.showProgress('Ingest New Bounces',
             'Scanning unseen bounce emails, classifying each, and creating matching records in ListMonk. Only truly invalid addresses become hard bounces. Please wait...');
@@ -642,35 +563,6 @@ const Bounces = {
         }
     },
 
-    async scanBounceMail() {
-        console.log('[BounceScanner] scanBounceMail clicked');
-        const scope = this.campaignFilter ? `"${this._campaignLabel()}"` : 'ALL campaigns';
-        App.showProgress('Scan Bounce Mailbox',
-            `Connecting to the bounce IMAP mailbox and scanning recent messages (scope: ${scope}). Please wait...`);
-        try {
-            const result = await API.post(`/api/bounce-scanner/scan${this._campaignQuery()}`);
-            console.log('[BounceScanner] scan result:', result);
-            if (result && result.error) {
-                App.showResult('Scan Bounce Mailbox — Error',
-                    `<p style="color:#e74c3c">${App.escapeHtml(result.error)}</p>`);
-                return;
-            }
-            const r = result || {};
-            App.showResult('Scan Bounce Mailbox — Done', `
-                <ul style="line-height:1.8">
-                    <li>Emails scanned: <strong>${r.scanned || 0}</strong></li>
-                    <li>Blacklist bounces fixed: <strong>${r.fixed || 0}</strong></li>
-                    <li>Errors: <strong>${r.errors || 0}</strong></li>
-                    ${r.message ? `<li>${App.escapeHtml(r.message)}</li>` : ''}
-                </ul>
-            `);
-            if (r.fixed > 0) this.render();
-        } catch (err) {
-            console.error('[BounceScanner] scan failed:', err);
-            App.showResult('Scan Bounce Mailbox — Failed',
-                `<p style="color:#e74c3c">${App.escapeHtml(err.message || 'Unknown error')}</p>`);
-        }
-    },
 };
 
 // Initialize on DOM ready
