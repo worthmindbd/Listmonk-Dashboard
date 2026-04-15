@@ -196,19 +196,29 @@ def _clean_subject(subject: str) -> str:
     return cleaned
 
 
-def _match_campaign(campaigns: list[dict], email_date: Optional[datetime] = None) -> Optional[dict]:
+def _match_campaign(
+    campaigns: list[dict],
+    email_date: Optional[datetime] = None,
+    sub_list_ids: Optional[set] = None,
+) -> Optional[dict]:
     """
-    Match a reply email to the most recent ListMonk campaign
-    created on or before the email date. This ensures emails from
-    any month find their correct campaign.
-    Returns campaign dict {campaign_id, campaign_name, campaign_subject} or None.
+    Match a reply email to the most recent ListMonk campaign created on or
+    before the email date whose target lists intersect the subscriber's lists.
+
+    If `sub_list_ids` is provided, only campaigns whose `lists` include at
+    least one of those IDs are considered — this prevents attributing a reply
+    to a campaign the subscriber never received. If a campaign has no `lists`
+    field populated (API sometimes omits it), fall back to date-only matching
+    for that campaign, mirroring link_unsubscribe._pick_campaign_for_list_ids.
+
+    Returns {campaign_id, campaign_name, campaign_subject, matched_list_id}
+    or None if nothing qualifies.
     """
     if not email_date:
         email_date = datetime.utcnow()
     if not campaigns:
         return None
 
-    # Make email_date timezone-naive for comparison
     email_naive = email_date.replace(tzinfo=None) if email_date.tzinfo else email_date
 
     best_match = None
@@ -223,17 +233,26 @@ def _match_campaign(campaigns: list[dict], email_date: Optional[datetime] = None
         except (ValueError, TypeError):
             continue
 
-        # Campaign must be created on or before the email date
         if camp_date > email_naive:
             continue
 
-        # Pick the closest (most recent) campaign before the email
+        camp_list_ids = [l.get("id") for l in (camp.get("lists") or [])]
+        matched_list_id = None
+        if sub_list_ids and camp_list_ids:
+            for lid in camp_list_ids:
+                if lid in sub_list_ids:
+                    matched_list_id = lid
+                    break
+            if matched_list_id is None:
+                continue
+
         if best_date is None or camp_date > best_date:
             best_date = camp_date
             best_match = {
                 "campaign_id": camp.get("id"),
                 "campaign_name": camp.get("name", ""),
                 "campaign_subject": camp.get("subject", ""),
+                "matched_list_id": matched_list_id,
             }
 
     return best_match
@@ -274,6 +293,55 @@ import asyncio
 _scan_lock = asyncio.Lock()
 
 
+def _reattribute_existing_records(
+    records: list[dict], campaigns_list: list[dict]
+) -> tuple[int, int]:
+    """
+    One-time backfill: re-run list-aware attribution on existing email-source
+    records that were stored with the old date-only matcher.
+
+    - If a record matches a different campaign, update it in place.
+    - If a record matches no campaign, mark it for removal (caller filters).
+    - Skips records already marked with `reattributed_at`, records without
+      `lists_removed`, and non-email records.
+
+    Returns (changed_count, removed_count).
+    """
+    changed = 0
+    removed = 0
+    for r in records:
+        if r.get("source") != "email":
+            continue
+        if r.get("reattributed_at"):
+            continue
+        lists_removed = r.get("lists_removed") or []
+        if not lists_removed:
+            continue
+
+        ts = r.get("timestamp", "")
+        try:
+            rec_date = datetime.fromisoformat(ts) if ts else datetime.utcnow()
+        except ValueError:
+            rec_date = datetime.utcnow()
+
+        new_match = _match_campaign(
+            campaigns_list, rec_date, set(lists_removed)
+        )
+        if new_match:
+            new_cid = new_match["campaign_id"]
+            if r.get("campaign_id") != new_cid:
+                r["campaign_id"] = new_cid
+                r["campaign_name"] = new_match["campaign_name"]
+                r["matched_list_id"] = new_match.get("matched_list_id")
+                changed += 1
+            r["reattributed_at"] = datetime.utcnow().isoformat()
+        else:
+            r["_remove"] = True
+            removed += 1
+
+    return changed, removed
+
+
 async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
     """
     Scan IMAP inbox for unsubscribe requests and process them.
@@ -307,6 +375,27 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                 logger.error(f"Failed to fetch campaigns: {e}")
                 print(f"[IMAP] ERROR fetching campaigns: {e}")
                 campaigns_list = []
+
+            # Backfill: re-attribute any pre-fix email records once, so the
+            # "Unsubscribes by Campaign" view self-heals on the next scan.
+            if campaigns_list:
+                try:
+                    existing_for_backfill = load_log()
+                    changed, removed = _reattribute_existing_records(
+                        existing_for_backfill, campaigns_list
+                    )
+                    if changed or removed:
+                        cleaned = [r for r in existing_for_backfill if not r.get("_remove")]
+                        save_log(cleaned)
+                        if changed:
+                            print(f"[IMAP] Re-attributed {changed} existing records")
+                            logger.info(f"Backfill: re-attributed {changed} existing records")
+                        if removed:
+                            print(f"[IMAP] Removed {removed} unattributable records")
+                            logger.info(f"Backfill: removed {removed} unattributable records")
+                except Exception as e:
+                    logger.error(f"Backfill reattribution failed: {e}")
+                    print(f"[IMAP] Backfill error (non-fatal): {e}")
 
             # Determine the latest campaign's creation date to filter emails
             latest_campaign_date = None
@@ -409,14 +498,8 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     else:
                         email_date = datetime.utcnow()
 
-                    # Match to a campaign by month
-                    campaign = _match_campaign(campaigns_list, email_date)
-                    if not campaign:
-                        print(f"[IMAP] No campaign match for date {email_date} from {sender_email}")
-                        logger.info(f"No campaign match for '{subject}' from {sender_email}, skipping")
-                        continue
-
-                    # Look up subscriber in ListMonk
+                    # Look up subscriber in ListMonk first so we know which
+                    # lists they're on before attributing to a campaign.
                     try:
                         result = await client.get_subscribers(
                             1, 1, f"subscribers.email = '{sender_email}'"
@@ -430,6 +513,16 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                         subscriber = subscribers[0]
                         sub_id = subscriber["id"]
                         sub_lists = [lst["id"] for lst in subscriber.get("lists", [])]
+
+                        # Only process if subscriber belongs to a campaign's
+                        # target list — otherwise skip entirely.
+                        campaign = _match_campaign(
+                            campaigns_list, email_date, set(sub_lists)
+                        )
+                        if not campaign:
+                            print(f"[IMAP] No list-matched campaign for {sender_email}, skipping")
+                            logger.info(f"No list-matched campaign for '{subject}' from {sender_email}; skipping")
+                            continue
 
                         # Unsubscribe from all lists
                         if sub_lists:
@@ -456,6 +549,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                             "campaign_key": f"{email_date.year}-{email_date.month:02d}",
                             "campaign_id": campaign["campaign_id"],
                             "campaign_name": campaign["campaign_name"],
+                            "matched_list_id": campaign.get("matched_list_id"),
                             "subscriber_id": sub_id,
                             "lists_removed": sub_lists,
                             "timestamp": datetime.utcnow().isoformat(),
