@@ -9,8 +9,6 @@ services:
       - .env
     volumes:
       - ./schedule.json:/app/schedule.json
-      - ./unsubscribe_log.json:/app/unsubscribe_log.json
-      - ./unsubscribe_settings.json:/app/unsubscribe_settings.json
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/auth/login')"]
       interval: 30s

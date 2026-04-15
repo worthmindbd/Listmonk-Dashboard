@@ -71,7 +71,7 @@ def load_log() -> list[dict]:
         if migrated:
             save_log(records)
         return records
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, IsADirectoryError, PermissionError):
         return []
 
 
@@ -91,7 +91,7 @@ def load_settings() -> dict:
     try:
         data = json.loads(SETTINGS_FILE.read_text())
         return {**_DEFAULT_SETTINGS, **data}
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, IsADirectoryError, PermissionError):
         return dict(_DEFAULT_SETTINGS)
 
 

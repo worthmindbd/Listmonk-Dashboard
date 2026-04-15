@@ -29,7 +29,7 @@ def load_log() -> list[dict]:
     """Load the unsubscribe log from LOG_FILE (module-level, patchable in tests)."""
     try:
         return json.loads(LOG_FILE.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, IsADirectoryError, PermissionError):
         return []
 
 
@@ -43,7 +43,7 @@ def load_settings() -> dict:
     try:
         data = json.loads(SETTINGS_FILE.read_text())
         return {**_DEFAULT_SETTINGS, **data}
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, IsADirectoryError, PermissionError):
         return dict(_DEFAULT_SETTINGS)
 
 
