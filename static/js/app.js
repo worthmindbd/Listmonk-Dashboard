@@ -424,7 +424,8 @@ const Bounces = {
                 : 'All campaigns';
 
             App.setActions(`
-                <button class="btn btn-sm btn-primary" onclick="Bounces.fixBlacklistBounces()">Fix Blacklist Bounces</button>
+                <button class="btn btn-sm btn-primary" onclick="Bounces.ingestBounces()">Ingest New Bounces</button>
+                <button class="btn btn-sm" onclick="Bounces.fixBlacklistBounces()">Fix Blacklist Bounces</button>
                 <button class="btn btn-sm" onclick="Bounces.scanBounceMail()">Scan Bounce Mail</button>
                 <button class="btn btn-sm" onclick="Bounces.exportBounces()">Export CSV</button>
                 <button class="btn btn-sm btn-danger" onclick="Bounces.deleteAll()">Delete All Bounces</button>
@@ -605,6 +606,39 @@ const Bounces = {
             if (progress.status === 'done' || progress.status === 'error') {
                 return progress;
             }
+        }
+    },
+
+    async ingestBounces() {
+        App.showProgress('Ingest New Bounces',
+            'Scanning unseen bounce emails, classifying each, and creating matching records in ListMonk. Only truly invalid addresses become hard bounces. Please wait...');
+        try {
+            const result = await API.post('/api/bounces/ingest');
+            if (result && result.error) {
+                App.showResult('Ingest Bounces — Error',
+                    `<p style="color:#e74c3c">${App.escapeHtml(result.error)}</p>`);
+                return;
+            }
+            const r = result || {};
+            const reasons = r.skipped_reasons || {};
+            const reasonList = Object.entries(reasons)
+                .map(([k, v]) => `<li>${App.escapeHtml(k)}: <strong>${v}</strong></li>`)
+                .join('');
+            App.showResult('Ingest Bounces — Done', `
+                <ul style="line-height:1.8">
+                    <li>Emails scanned: <strong>${r.scanned || 0}</strong></li>
+                    <li>Ingested: <strong>${r.ingested || 0}</strong>
+                        (hard: <strong>${r.hard || 0}</strong>, soft: <strong>${r.soft || 0}</strong>)</li>
+                    <li>Skipped: <strong>${r.skipped || 0}</strong></li>
+                    ${reasonList ? `<li>Skip reasons:<ul>${reasonList}</ul></li>` : ''}
+                    <li>Errors: <strong>${r.errors || 0}</strong></li>
+                    ${r.message ? `<li>${App.escapeHtml(r.message)}</li>` : ''}
+                </ul>
+            `);
+            if (r.ingested > 0) this.render();
+        } catch (err) {
+            App.showResult('Ingest Bounces — Failed',
+                `<p style="color:#e74c3c">${App.escapeHtml(err.message || 'Unknown error')}</p>`);
         }
     },
 

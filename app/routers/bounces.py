@@ -6,12 +6,25 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from typing import Optional
 from app.services.listmonk_client import listmonk
+from app.services.bounce_ingest import ingest_bounce_mailbox
 import httpx
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _DELETE_CONCURRENCY = 10
+
+
+@router.post("/ingest")
+async def ingest_bounces():
+    """Scan the bounce IMAP mailbox for new bounces, classify each, and
+    create matching bounce records in ListMonk. Only truly invalid addresses
+    (5.1.x, user unknown) become hard bounces — everything else is soft."""
+    try:
+        return await ingest_bounce_mailbox(listmonk)
+    except Exception as e:
+        logger.error(f"bounce ingest failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("")

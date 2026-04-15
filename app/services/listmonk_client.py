@@ -228,18 +228,28 @@ class ListMonkClient:
     async def delete_bounce(self, bounce_id: int) -> dict:
         return await self._request("DELETE", f"/api/bounces/{bounce_id}")
 
-    async def create_bounce(self, subscriber_id: int, campaign_id: int,
+    async def create_bounce(self, email: str,
+                            campaign_uuid: Optional[str] = None,
                             bounce_type: str = "soft",
                             source: str = "api",
                             meta: dict = None) -> dict:
+        """Post a bounce to ListMonk's generic bounce webhook. Requires
+        'Enable bounce webhooks' in ListMonk → Settings → Bounces.
+        Uses regular admin Basic auth (same API credentials as /api)."""
         payload = {
-            "subscriber_id": subscriber_id,
-            "campaign_id": campaign_id,
-            "type": bounce_type,
+            "email": email,
             "source": source,
+            "type": bounce_type,
             "meta": meta or {},
         }
-        return await self._request("POST", "/api/bounces", json=payload)
+        if campaign_uuid:
+            payload["campaign_uuid"] = campaign_uuid
+        resp = await self.client.post("/webhooks/bounce", json=payload)
+        resp.raise_for_status()
+        try:
+            return resp.json()
+        except Exception:
+            return {"ok": True}
 
     async def delete_all_bounces(self) -> dict:
         return await self._request("DELETE", "/api/bounces", params={"all": "true"})
