@@ -397,6 +397,21 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     logger.error(f"Backfill reattribution failed: {e}")
                     print(f"[IMAP] Backfill error (non-fatal): {e}")
 
+            # Prune records whose campaign no longer exists in ListMonk.
+            if campaigns_list:
+                try:
+                    existing_log = load_log()
+                    valid_cids = {c.get("id") for c in campaigns_list}
+                    pruned = [r for r in existing_log if r.get("campaign_id") in valid_cids]
+                    removed_count = len(existing_log) - len(pruned)
+                    if removed_count:
+                        save_log(pruned)
+                        print(f"[IMAP] Pruned {removed_count} records for deleted campaigns")
+                        logger.info(f"Pruned {removed_count} records for deleted campaigns")
+                except Exception as e:
+                    logger.error(f"Campaign prune failed: {e}")
+                    print(f"[IMAP] Prune error (non-fatal): {e}")
+
             # Determine the latest campaign's creation date to filter emails
             latest_campaign_date = None
             for camp in campaigns_list:
