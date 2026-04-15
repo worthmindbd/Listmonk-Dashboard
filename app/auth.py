@@ -5,11 +5,14 @@ Uses a username/password from .env and signed cookies.
 
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 import time
 from fastapi import Request, Response
 from app.config import settings
+
+logger = logging.getLogger("auth")
 
 # Session cookie name
 COOKIE_NAME = "lmpro_session"
@@ -20,6 +23,8 @@ SESSION_MAX_AGE = 7 * 24 * 60 * 60
 _secret_key = os.getenv("SESSION_SECRET", "")
 if not _secret_key:
     _secret_key = secrets.token_hex(32)
+    logger.warning("SESSION_SECRET not set; generated ephemeral key. "
+                   "Set SESSION_SECRET in .env for persistent sessions across restarts.")
 
 
 def _sign(value: str) -> str:

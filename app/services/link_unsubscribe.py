@@ -7,7 +7,7 @@ unsubscribe_log.json with source="link".
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.services.listmonk_client import ListMonkClient
@@ -55,7 +55,7 @@ def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
     matched_list_id is one of list_ids that the chosen campaign targets — used
     by the caller to set a representative list_id on the log record.
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     for camp in campaigns:
         camp_list_ids = [l.get("id") for l in (camp.get("lists") or [])]
         # Intersect campaign's target lists with subscriber's unsubscribed lists.
@@ -73,7 +73,7 @@ def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
         if not created:
             continue
         try:
-            camp_date = datetime.fromisoformat(created[:10])
+            camp_date = datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             continue
         if camp_date <= now:
@@ -93,7 +93,7 @@ def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
 
 
 def _current_campaign_key() -> str:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     return f"{now.year}-{now.month:02d}"
 
 
@@ -224,7 +224,7 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
             "campaign_key": campaign["campaign_key"],
             "subscriber_id": sid,
             "lists_removed": sub_lists,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         new_records.append(record)
         processed_emails.add(email)
@@ -233,9 +233,11 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
         logger.info(f"[LINK] {action}: {email} (list: {list_name})")
 
     if new_records:
-        existing_log = load_log()
-        existing_log.extend(new_records)
-        save_log(existing_log)
+        from app.services.imap_unsubscribe import _log_lock
+        async with _log_lock:
+            existing_log = load_log()
+            existing_log.extend(new_records)
+            save_log(existing_log)
 
     return {
         "scanned_lists": scanned_lists,

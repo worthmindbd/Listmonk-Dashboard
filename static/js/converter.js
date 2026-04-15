@@ -61,21 +61,21 @@ const Converter = {
 
     // ── Step 2: Column Mapping ───────────────────────────
     renderMapping() {
-        let colOptions = this.columns.map(c => `<option value="${c}">${c}</option>`).join('');
+        let colOptions = this.columns.map(c => `<option value="${App.escapeHtml(c)}">${App.escapeHtml(c)}</option>`).join('');
 
         let attrCheckboxes = this.columns.map(c =>
-            `<label class="checkbox-label"><input type="checkbox" name="attrCols" value="${c}"><span>${c}</span></label>`
+            `<label class="checkbox-label"><input type="checkbox" name="attrCols" value="${App.escapeHtml(c)}"><span>${App.escapeHtml(c)}</span></label>`
         ).join('');
 
         // Sample data table
         let sampleHtml = '';
         if (this.sampleRows.length) {
             sampleHtml = '<div class="table-wrapper" style="margin-top:16px"><table><thead><tr>';
-            this.columns.forEach(c => { sampleHtml += `<th>${c}</th>`; });
+            this.columns.forEach(c => { sampleHtml += `<th>${App.escapeHtml(c)}</th>`; });
             sampleHtml += '</tr></thead><tbody>';
             this.sampleRows.forEach(row => {
                 sampleHtml += '<tr>';
-                this.columns.forEach(c => { sampleHtml += `<td>${row[c] || ''}</td>`; });
+                this.columns.forEach(c => { sampleHtml += `<td>${App.escapeHtml(row[c] || '')}</td>`; });
                 sampleHtml += '</tr>';
             });
             sampleHtml += '</tbody></table></div>';
@@ -228,16 +228,16 @@ const Converter = {
 
         let tableHtml = '<div class="table-wrapper"><table><thead><tr><th>email</th><th>name</th><th>attributes</th></tr></thead><tbody>';
         previewRows.forEach(r => {
-            tableHtml += `<tr><td>${r.email}</td><td>${r.name}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;font-size:0.8rem">${r.attributes}</td></tr>`;
+            tableHtml += `<tr><td>${App.escapeHtml(r.email)}</td><td>${App.escapeHtml(r.name)}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;font-size:0.8rem">${App.escapeHtml(r.attributes)}</td></tr>`;
         });
         tableHtml += '</tbody></table></div>';
 
         document.getElementById('previewTable').innerHTML = tableHtml;
         document.getElementById('previewStats').innerHTML = `
             <p style="color:var(--text-secondary)">
-                Email: <strong>${emailCol}</strong> |
-                Name: <strong>${nameCol || '(none)'}</strong> |
-                Attributes: <strong>${attrCols.join(', ') || '(none)'}</strong>
+                Email: <strong>${App.escapeHtml(emailCol)}</strong> |
+                Name: <strong>${App.escapeHtml(nameCol || '(none)')}</strong> |
+                Attributes: <strong>${App.escapeHtml(attrCols.join(', ') || '(none)')}</strong>
             </p>
         `;
     },
@@ -278,7 +278,7 @@ const Converter = {
         } catch {}
 
         let listOptions = lists.map(l =>
-            `<label class="checkbox-label"><input type="checkbox" name="importLists" value="${l.id}"><span>${l.name}</span></label>`
+            `<label class="checkbox-label"><input type="checkbox" name="importLists" value="${l.id}"><span>${App.escapeHtml(l.name)}</span></label>`
         ).join('');
 
         dialog.style.display = 'block';

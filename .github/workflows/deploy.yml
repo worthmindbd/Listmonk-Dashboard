@@ -15,6 +15,9 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
+            set -euo pipefail
             cd /root/Listmonk-Dashboard
             git pull origin main
             docker compose up -d --build
+            sleep 5
+            curl -f http://localhost:8000/auth/login || (echo "Deploy failed!" && exit 1)

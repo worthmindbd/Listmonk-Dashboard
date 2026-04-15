@@ -517,6 +517,7 @@ select option { background: var(--bg-secondary); }
 .badge-warning { background: var(--warning-bg); color: var(--warning); }
 .badge-danger { background: var(--danger-bg); color: var(--danger); }
 .badge-info { background: var(--info-bg); color: var(--info); }
+.badge-primary { background: var(--accent-bg); color: var(--accent); }
 .badge-default { background: var(--bg-hover); color: var(--text-secondary); }
 
 /* ── Pagination ───────────────────────────────────────── */

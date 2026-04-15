@@ -36,10 +36,10 @@ const Lists = {
             }
 
             lists.forEach(l => {
-                const tags = (l.tags || []).map(t => `<span class="tag">${t}</span>`).join('') || '';
+                const tags = (l.tags || []).map(t => `<span class="tag">${App.escapeHtml(t)}</span>`).join('') || '';
                 html += `<tr>
                     <td>${l.id}</td>
-                    <td><strong>${l.name}</strong> ${tags}</td>
+                    <td><strong>${App.escapeHtml(l.name)}</strong> ${tags}</td>
                     <td><span class="badge badge-${l.type === 'public' ? 'info' : 'default'}">${l.type}</span></td>
                     <td>${l.optin}</td>
                     <td>${App.formatNumber(l.subscriber_count || 0)}</td>
@@ -122,7 +122,7 @@ const Lists = {
                 <div class="inline-form">
                     <h3 style="margin-bottom:16px">Edit List #${l.id}</h3>
                     <div class="form-grid">
-                        <div class="form-group"><label>Name</label><input type="text" id="editListName" value="${l.name || ''}"></div>
+                        <div class="form-group"><label>Name</label><input type="text" id="editListName" value="${App.escapeHtml(l.name || '')}"></div>
                         <div class="form-group">
                             <label>Type</label>
                             <select id="editListType">
@@ -138,8 +138,8 @@ const Lists = {
                             </select>
                         </div>
                     </div>
-                    <div class="form-group"><label>Description</label><textarea id="editListDesc">${l.description || ''}</textarea></div>
-                    <div class="form-group"><label>Tags</label><input type="text" id="editListTags" value="${(l.tags || []).join(', ')}"></div>
+                    <div class="form-group"><label>Description</label><textarea id="editListDesc">${App.escapeHtml(l.description || '')}</textarea></div>
+                    <div class="form-group"><label>Tags</label><input type="text" id="editListTags" value="${App.escapeHtml((l.tags || []).join(', '))}"></div>
                     <div class="form-actions">
                         <button class="btn btn-primary" onclick="Lists.update(${l.id})">Update</button>
                         <button class="btn btn-secondary" onclick="Lists.render()">Cancel</button>

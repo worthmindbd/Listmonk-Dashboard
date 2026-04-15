@@ -1,5 +1,12 @@
 #!/bin/bash
+set -euo pipefail
+
 echo "Starting ListMonk Dashboard..."
+
+if [ ! -d "venv" ]; then
+    echo "Error: virtual environment not found. Run 'python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt' first."
+    exit 1
+fi
 
 # Check if port 8000 is already in use, kill it if so
 if lsof -i :8000 > /dev/null 2>&1; then

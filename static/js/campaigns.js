@@ -52,12 +52,12 @@ const Campaigns = {
             }
 
             campaigns.forEach(c => {
-                const listNames = (c.lists || []).map(l => `<span class="tag">${l.name}</span>`).join('') || '-';
+                const listNames = (c.lists || []).map(l => `<span class="tag">${App.escapeHtml(l.name)}</span>`).join('') || '-';
                 const sent = c.to_send || 0;
                 html += `<tr>
                     <td>${c.id}</td>
-                    <td><strong>${c.name}</strong></td>
-                    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${c.subject || '-'}</td>
+                    <td><strong>${App.escapeHtml(c.name)}</strong></td>
+                    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${App.escapeHtml(c.subject) || '-'}</td>
                     <td>${App.statusBadge(c.status)}</td>
                     <td>${listNames}</td>
                     <td>${App.formatNumber(sent)}</td>
@@ -110,11 +110,11 @@ const Campaigns = {
         } catch {}
 
         let listOptions = lists.map(l =>
-            `<label class="checkbox-label"><input type="checkbox" name="campLists" value="${l.id}"><span>${l.name}</span></label>`
+            `<label class="checkbox-label"><input type="checkbox" name="campLists" value="${l.id}"><span>${App.escapeHtml(l.name)}</span></label>`
         ).join('');
 
         let tplOptions = templates.map(t =>
-            `<option value="${t.id}" ${t.is_default ? 'selected' : ''}>${t.name}</option>`
+            `<option value="${t.id}" ${t.is_default ? 'selected' : ''}>${App.escapeHtml(t.name)}</option>`
         ).join('');
 
         App.setContent(`
@@ -194,8 +194,8 @@ const Campaigns = {
             const unsubEmail = unsubData.email_count || 0;
             const unsubLink = unsubData.link_count || 0;
 
-            const lists = (c.lists || []).map(l => `<span class="tag">${l.name}</span>`).join('') || '-';
-            const tags = (c.tags || []).map(t => `<span class="tag">${t}</span>`).join('') || '-';
+            const lists = (c.lists || []).map(l => `<span class="tag">${App.escapeHtml(l.name)}</span>`).join('') || '-';
+            const tags = (c.tags || []).map(t => `<span class="tag">${App.escapeHtml(t)}</span>`).join('') || '-';
 
             const openRate = c.sent ? ((c.views || 0) / c.sent * 100).toFixed(1) : '0';
             const ctr = c.sent ? ((c.clicks || 0) / c.sent * 100).toFixed(1) : '0';
@@ -204,7 +204,7 @@ const Campaigns = {
             App.setContent(`
                 <div class="inline-form">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
-                        <h3>${c.name}</h3>
+                        <h3>${App.escapeHtml(c.name)}</h3>
                         <div class="action-btns">
                             <button class="btn btn-sm" onclick="Campaigns.viewAnalytics(${c.id})">View Analytics</button>
                             <button class="btn btn-sm" onclick="Campaigns.exportCampaign(${c.id})">Export CSV</button>
@@ -239,7 +239,7 @@ const Campaigns = {
                         </div>
                     </div>
                     <table style="width:auto">
-                        <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Subject</td><td>${c.subject || '-'}</td></tr>
+                        <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Subject</td><td>${App.escapeHtml(c.subject) || '-'}</td></tr>
                         <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Lists</td><td>${lists}</td></tr>
                         <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Tags</td><td>${tags}</td></tr>
                         <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Content Type</td><td>${c.content_type || '-'}</td></tr>
@@ -295,15 +295,15 @@ const Campaigns = {
             const selectedIds = (c.lists || []).map(l => l.id);
 
             let listOptions = allLists.map(l =>
-                `<label class="checkbox-label"><input type="checkbox" name="editCampLists" value="${l.id}" ${selectedIds.includes(l.id) ? 'checked' : ''}><span>${l.name}</span></label>`
+                `<label class="checkbox-label"><input type="checkbox" name="editCampLists" value="${l.id}" ${selectedIds.includes(l.id) ? 'checked' : ''}><span>${App.escapeHtml(l.name)}</span></label>`
             ).join('');
 
             App.setContent(`
                 <div class="inline-form">
                     <h3 style="margin-bottom:16px">Edit Campaign #${c.id}</h3>
                     <div class="form-grid">
-                        <div class="form-group"><label>Name</label><input type="text" id="editCampName" value="${c.name || ''}"></div>
-                        <div class="form-group"><label>Subject</label><input type="text" id="editCampSubject" value="${c.subject || ''}"></div>
+                        <div class="form-group"><label>Name</label><input type="text" id="editCampName" value="${App.escapeHtml(c.name || '')}"></div>
+                        <div class="form-group"><label>Subject</label><input type="text" id="editCampSubject" value="${App.escapeHtml(c.subject || '')}"></div>
                     </div>
                     <div class="form-group">
                         <label>Lists</label>
@@ -311,9 +311,9 @@ const Campaigns = {
                     </div>
                     <div class="form-group">
                         <label>Body</label>
-                        <textarea id="editCampBody" rows="10">${c.body || ''}</textarea>
+                        <textarea id="editCampBody" rows="10">${App.escapeHtml(c.body || '')}</textarea>
                     </div>
-                    <div class="form-group"><label>Tags</label><input type="text" id="editCampTags" value="${(c.tags || []).join(', ')}"></div>
+                    <div class="form-group"><label>Tags</label><input type="text" id="editCampTags" value="${App.escapeHtml((c.tags || []).join(', '))}"></div>
                     <div class="form-actions">
                         <button class="btn btn-primary" onclick="Campaigns.update(${c.id})">Update</button>
                         <button class="btn btn-secondary" onclick="Campaigns.showDetail(${c.id})">Cancel</button>
@@ -354,7 +354,7 @@ const Campaigns = {
                 <div style="margin-bottom:12px">
                     <button class="btn btn-secondary" onclick="Campaigns.showDetail(${id})">Back to Campaign</button>
                 </div>
-                <iframe class="preview-frame" srcdoc="${result.html.replace(/"/g, '&quot;')}"></iframe>
+                <iframe class="preview-frame" srcdoc="${App.escapeHtml(result.html)}"></iframe>
             `);
         } catch {
             App.toast('Failed to load preview', 'error');

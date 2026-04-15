@@ -37,11 +37,11 @@ const Subscribers = {
             }
 
             subscribers.forEach(s => {
-                const lists = (s.lists || []).map(l => `<span class="tag">${l.name}</span>`).join('') || '-';
+                const lists = (s.lists || []).map(l => `<span class="tag">${App.escapeHtml(l.name)}</span>`).join('') || '-';
                 html += `<tr>
                     <td>${s.id}</td>
-                    <td><strong>${s.email}</strong></td>
-                    <td>${s.name || '-'}</td>
+                    <td><strong>${App.escapeHtml(s.email)}</strong></td>
+                    <td>${App.escapeHtml(s.name) || '-'}</td>
                     <td>${App.statusBadge(s.status)}</td>
                     <td>${lists}</td>
                     <td>${App.formatDate(s.created_at)}</td>
@@ -118,8 +118,8 @@ const Subscribers = {
                 <div class="inline-form">
                     <h3 style="margin-bottom:16px">Edit Subscriber #${s.id}</h3>
                     <div class="form-grid">
-                        <div class="form-group"><label>Email</label><input type="email" id="editEmail" value="${s.email || ''}"></div>
-                        <div class="form-group"><label>Name</label><input type="text" id="editName" value="${s.name || ''}"></div>
+                        <div class="form-group"><label>Email</label><input type="email" id="editEmail" value="${App.escapeHtml(s.email || '')}"></div>
+                        <div class="form-group"><label>Name</label><input type="text" id="editName" value="${App.escapeHtml(s.name || '')}"></div>
                     </div>
                     <div class="form-group">
                         <label>Status</label>

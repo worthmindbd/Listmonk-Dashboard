@@ -296,19 +296,19 @@ const Unsubscribes = {
 
         records.forEach((r, i) => {
             const idx = (this.campaignPage - 1) * this.campaignPerPage + i + 1;
-            const email = (r.email || '-').replace(/</g, '&lt;');
-            const name = (r.name || '-').replace(/</g, '&lt;');
+            const email = App.escapeHtml(r.email || '-');
+            const name = App.escapeHtml(r.name || '-');
             const isChecked = this.selectedEmails.has(r.email);
 
             html += `<tr>
-                <td><input type="checkbox" value="${email}" onchange="Unsubscribes.toggleSelect('${r.email}')" ${isChecked ? 'checked' : ''}/></td>
+                <td><input type="checkbox" value="${email}" onchange="Unsubscribes.toggleSelect(${i})" ${isChecked ? 'checked' : ''}/></td>
                 <td>${idx}</td>
                 <td><strong>${email}</strong></td>
                 <td>${name}</td>
                 <td>${Unsubscribes.renderSourceBadge(r)}</td>
                 <td>${App.formatDateTime(r.timestamp)}</td>
                 <td>
-                    <button class="btn btn-sm btn-danger" style="padding:2px 8px;font-size:0.75rem" onclick="Unsubscribes.deleteRecord('${r.email}')">
+                    <button class="btn btn-sm btn-danger" style="padding:2px 8px;font-size:0.75rem" onclick="Unsubscribes.deleteRecord(${i})">
                         Remove
                     </button>
                 </td>
@@ -330,7 +330,10 @@ const Unsubscribes = {
     },
 
     /* ── Selection ────────────────────────────────────────── */
-    toggleSelect(email) {
+    toggleSelect(idx) {
+        const records = this.campaignRecords.results || [];
+        const email = records[idx]?.email;
+        if (!email) return;
         if (this.selectedEmails.has(email)) {
             this.selectedEmails.delete(email);
         } else {
@@ -357,7 +360,10 @@ const Unsubscribes = {
     },
 
     /* ── CRUD Actions ─────────────────────────────────────── */
-    async deleteRecord(email) {
+    async deleteRecord(idx) {
+        const records = this.campaignRecords.results || [];
+        const email = records[idx]?.email;
+        if (!email) return;
         if (!confirm(`Remove "${email}" from this campaign's unsubscribe list?`)) return;
         try {
             await API.del(`/api/unsubscribes/records?emails=${encodeURIComponent(email)}`);

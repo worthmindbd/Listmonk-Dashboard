@@ -6,13 +6,14 @@ from all ListMonk lists and blocklists them.
 Storage: unsubscribe_log.json (same pattern as schedule.json)
 """
 
+import asyncio
 import imaplib
 import email
 import email.policy
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +39,11 @@ KEYWORD_PATTERN = re.compile(
     "|".join(re.escape(kw) for kw in UNSUBSCRIBE_KEYWORDS),
     re.IGNORECASE,
 )
+
+# Lock to prevent TOCTOU races between background scans and API writes
+_log_lock = asyncio.Lock()
+
+from app.services.imap_helpers import safe_email_for_query, imap_date
 
 
 def _normalize_campaign_key(key: str) -> str:
@@ -71,6 +77,14 @@ def load_log() -> list[dict]:
 
 def save_log(records: list[dict]) -> None:
     LOG_FILE.write_text(json.dumps(records, indent=2, ensure_ascii=False))
+
+
+async def append_log(new_records: list[dict]) -> None:
+    """Atomically append records to the log file under lock."""
+    async with _log_lock:
+        existing = load_log()
+        existing.extend(new_records)
+        save_log(existing)
 
 
 def load_settings() -> dict:
@@ -215,11 +229,9 @@ def _match_campaign(
     or None if nothing qualifies.
     """
     if not email_date:
-        email_date = datetime.utcnow()
+        email_date = datetime.now(timezone.utc)
     if not campaigns:
         return None
-
-    email_naive = email_date.replace(tzinfo=None) if email_date.tzinfo else email_date
 
     best_match = None
     best_date = None
@@ -229,11 +241,11 @@ def _match_campaign(
         if not created:
             continue
         try:
-            camp_date = datetime.fromisoformat(created[:10])
+            camp_date = datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             continue
 
-        if camp_date > email_naive:
+        if camp_date > email_date:
             continue
 
         camp_list_ids = [l.get("id") for l in (camp.get("lists") or [])]
@@ -289,7 +301,6 @@ def check_imap_status() -> dict:
         return {"configured": True, "connected": False, "error": str(e)}
 
 
-import asyncio
 _scan_lock = asyncio.Lock()
 
 
@@ -320,9 +331,9 @@ def _reattribute_existing_records(
 
         ts = r.get("timestamp", "")
         try:
-            rec_date = datetime.fromisoformat(ts) if ts else datetime.utcnow()
+            rec_date = datetime.fromisoformat(ts) if ts else datetime.now(timezone.utc)
         except ValueError:
-            rec_date = datetime.utcnow()
+            rec_date = datetime.now(timezone.utc)
 
         new_match = _match_campaign(
             campaigns_list, rec_date, set(lists_removed)
@@ -334,7 +345,7 @@ def _reattribute_existing_records(
                 r["campaign_name"] = new_match["campaign_name"]
                 r["matched_list_id"] = new_match.get("matched_list_id")
                 changed += 1
-            r["reattributed_at"] = datetime.utcnow().isoformat()
+            r["reattributed_at"] = datetime.now(timezone.utc).isoformat()
         else:
             r["_remove"] = True
             removed += 1
@@ -418,7 +429,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                 created = camp.get("created_at", "")
                 if created:
                     try:
-                        latest_campaign_date = datetime.fromisoformat(created[:10])
+                        latest_campaign_date = datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
                         break  # campaigns are sorted DESC, first one is latest
                     except (ValueError, TypeError):
                         continue
@@ -429,13 +440,13 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
             if latest_campaign_date:
                 # Search from the 1st of the campaign month
                 since_date = latest_campaign_date.replace(day=1)
-                since_str = since_date.strftime("%d-%b-%Y")
+                since_str = imap_date(since_date)
                 status, msg_ids = conn.search(None, f'(SINCE {since_str})')
                 print(f"[IMAP] Searching emails SINCE {since_str} (campaign month)")
             else:
                 # Fallback: scan last 30 days if no campaigns found
-                since_date = datetime.utcnow() - timedelta(days=30)
-                since_str = since_date.strftime("%d-%b-%Y")
+                since_date = datetime.now(timezone.utc) - timedelta(days=30)
+                since_str = imap_date(since_date)
                 status, msg_ids = conn.search(None, f'(SINCE {since_str})')
                 print(f"[IMAP] No campaigns found, searching emails SINCE {since_str}")
 
@@ -509,15 +520,19 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                             from email.utils import parsedate_to_datetime
                             email_date = parsedate_to_datetime(date_str)
                         except Exception:
-                            email_date = datetime.utcnow()
+                            email_date = datetime.now(timezone.utc)
                     else:
-                        email_date = datetime.utcnow()
+                        email_date = datetime.now(timezone.utc)
 
                     # Look up subscriber in ListMonk first so we know which
                     # lists they're on before attributing to a campaign.
+                    safe_email = safe_email_for_query(sender_email)
+                    if not safe_email:
+                        logger.warning(f"Invalid email format, skipping: {sender_email}")
+                        continue
                     try:
                         result = await client.get_subscribers(
-                            1, 1, f"subscribers.email = '{sender_email}'"
+                            1, 1, f"subscribers.email = '{safe_email}'"
                         )
                         subscribers = result.get("data", {}).get("results", [])
 
@@ -567,7 +582,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                             "matched_list_id": campaign.get("matched_list_id"),
                             "subscriber_id": sub_id,
                             "lists_removed": sub_lists,
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
                         new_records.append(record)
                         processed_emails_set.add(sender_email)  # Prevent duplicates in same scan
@@ -585,9 +600,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
 
             # Save new records
             if new_records:
-                existing_log = load_log()
-                existing_log.extend(new_records)
-                save_log(existing_log)
+                await append_log(new_records)
 
         except Exception as e:
             logger.error(f"IMAP scan error: {e}")
@@ -604,7 +617,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
             "processed": processed,
             "errors": errors,
             "message": f"Scan complete: {processed} unsubscribed",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
 
@@ -613,10 +626,10 @@ def get_stats() -> dict:
     records = load_log()
     total = len(records)
 
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     today_count = sum(1 for r in records if r.get("timestamp", "").startswith(today))
 
-    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     week_count = sum(1 for r in records if r.get("timestamp", "") >= week_ago)
 
     # Source breakdown — records without 'source' are treated as 'email'

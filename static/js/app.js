@@ -311,7 +311,7 @@ const Templates = {
                 <button class="btn btn-secondary" onclick="Templates.render()">Back to Templates</button>
                 <span style="margin-left:12px;font-size:1.1rem;font-weight:600">${(t.name || '').replace(/</g, '&lt;')}</span>
             </div>
-            <iframe class="preview-frame" srcdoc="${(t.body || '').replace(/"/g, '&quot;')}"></iframe>
+            <iframe class="preview-frame" srcdoc="${App.escapeHtml(t.body || '')}"></iframe>
         `);
     },
 
@@ -415,7 +415,7 @@ const Bounces = {
 
             // Build campaign filter options
             const campOptions = this.campaigns.map(c =>
-                `<option value="${c.id}" ${c.id === this.campaignFilter ? 'selected' : ''}>${c.name} (${c.status})</option>`
+                `<option value="${c.id}" ${c.id === this.campaignFilter ? 'selected' : ''}>${App.escapeHtml(c.name)} (${c.status})</option>`
             ).join('');
 
             // Count by type for the filtered set info
@@ -453,7 +453,7 @@ const Bounces = {
                 const campName = (b.campaign?.name || '-').replace(/</g, '&lt;');
                 html += `<tr>
                     <td>${b.id}</td>
-                    <td><strong>${b.email || '-'}</strong></td>
+                    <td><strong>${App.escapeHtml(b.email || '-')}</strong></td>
                     <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis">${campName}</td>
                     <td>${b.source || '-'}</td>
                     <td><span class="badge badge-${b.type === 'hard' ? 'danger' : 'warning'}">${b.type || 'unknown'}</span></td>

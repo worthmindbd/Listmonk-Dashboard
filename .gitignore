@@ -16,4 +16,10 @@ schedule.json
 
 # Runtime data
 unsubscribe_log.json
+unsubscribe_log.json.bak
+unsubscribe_settings.json
+blocklist_restore_backup.json
+*.bak
 uvicorn.log
+.claude/settings.json
+skills-lock.json

@@ -44,7 +44,7 @@ const Analytics = {
 
     renderPage() {
         const campOptions = this.campaigns.map(c =>
-            `<option value="${c.id}" ${c.id === this.selectedCampaignId ? 'selected' : ''}>${c.name} (${c.status})</option>`
+            `<option value="${c.id}" ${c.id === this.selectedCampaignId ? 'selected' : ''}>${App.escapeHtml(c.name)} (${c.status})</option>`
         ).join('');
 
         // Build the overview stats from campaign data
@@ -393,10 +393,12 @@ const Analytics = {
 
         let html = '<div class="table-wrapper"><table><thead><tr><th>#</th><th>URL</th><th>Clicks</th></tr></thead><tbody>';
         data.forEach((d, i) => {
+            const safeUrl = App.escapeHtml(d.url);
+            const isSafeUrl = d.url && /^https?:\/\//i.test(d.url);
             html += `<tr>
                 <td>${i + 1}</td>
                 <td style="max-width:500px;overflow:hidden;text-overflow:ellipsis;word-break:break-all">
-                    <a href="${d.url}" target="_blank" rel="noopener" style="color:var(--accent)">${d.url}</a>
+                    ${isSafeUrl ? `<a href="${safeUrl}" target="_blank" rel="noopener" style="color:var(--accent)">${safeUrl}</a>` : `<span>${safeUrl}</span>`}
                 </td>
                 <td><strong>${App.formatNumber(d.count || 0)}</strong></td>
             </tr>`;

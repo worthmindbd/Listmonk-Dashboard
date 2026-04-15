@@ -5,5 +5,16 @@ __pycache__/
 .env
 .git/
 .claude/
+.agents/
+.agent/
 schedule.json
 *.md
+unsubscribe_log.json*
+unsubscribe_settings.json
+blocklist_restore_backup.json
+skills-lock.json
+tests/
+pytest.ini
+start.sh
+docker-compose.yml
+.github/

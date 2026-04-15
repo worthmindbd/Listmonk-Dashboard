@@ -17,13 +17,15 @@ import email.policy
 import imaplib
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.config import settings
 from app.services.listmonk_client import ListMonkClient
 
 logger = logging.getLogger("bounce_ingest")
+
+from app.services.imap_helpers import safe_email_for_query, imap_date
 
 
 # ─── Classification ──────────────────────────────────────────────────────────
@@ -271,7 +273,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
 
         try:
             conn.select("INBOX", readonly=False)
-            since = (datetime.utcnow() - timedelta(days=30)).strftime("%d-%b-%Y")
+            since = imap_date(datetime.now(timezone.utc) - timedelta(days=30))
             status, msg_ids = conn.search(None, f"(UNSEEN SINCE {since})")
             if status != "OK" or not msg_ids or not msg_ids[0]:
                 return {"scanned": 0, "ingested": 0, "skipped": 0, "errors": 0,
@@ -301,9 +303,14 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                         continue
 
                     # Look up subscriber
+                    safe_email = safe_email_for_query(recipient)
+                    if not safe_email:
+                        logger.warning(f"Invalid recipient format, skipping: {recipient}")
+                        conn.store(msg_id, "+FLAGS", "\\Seen")
+                        continue
                     try:
                         sub_res = await client.get_subscribers(
-                            1, 1, f"subscribers.email = '{recipient}'"
+                            1, 1, f"subscribers.email = '{safe_email}'"
                         )
                         subs = sub_res.get("data", {}).get("results", [])
                     except Exception as e:
@@ -377,7 +384,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
             "skipped": skipped,
             "skipped_reasons": skipped_reasons,
             "errors": errors,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "message": f"Ingested {ingested} ({hard_count} hard, {soft_count} soft), skipped {skipped}, errors {errors}",
         }
 
@@ -399,7 +406,7 @@ def _pick_campaign(
             if str(camp.get("uuid", "")) == hint or str(camp.get("id", "")) == hint:
                 return camp
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     for camp in recent_campaigns:
         camp_list_ids = [l.get("id") for l in (camp.get("lists") or [])]
         if not camp_list_ids:
@@ -410,7 +417,7 @@ def _pick_campaign(
         if not created:
             continue
         try:
-            camp_date = datetime.fromisoformat(created[:10])
+            camp_date = datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             continue
         if camp_date <= now:
