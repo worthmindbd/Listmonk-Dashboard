@@ -86,7 +86,7 @@ def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
 
     return {
         "campaign_id": None,
-        "campaign_name": "Unknown",
+        "campaign_name": "No matching campaign",
         "campaign_key": _current_campaign_key(),
         "matched_list_id": next(iter(list_ids)) if list_ids else None,
     }

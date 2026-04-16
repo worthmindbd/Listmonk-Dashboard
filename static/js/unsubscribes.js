@@ -31,7 +31,7 @@ const Unsubscribes = {
 
     /** Strip leading date prefix from raw Listmonk campaign name */
     cleanCampaignName(name) {
-        if (!name) return 'Unknown Campaign';
+        if (!name || name === 'Unknown') return 'No matching campaign';
         // Strip leading YYYYMMDD or YYYY-MM-DD prefix
         let cleaned = name.replace(/^\d{4}-?\d{2}-?\d{2}\s*/, '').trim();
         return cleaned || name;
@@ -204,7 +204,7 @@ const Unsubscribes = {
 
     /* ── Detail View — shows records for a single campaign ── */
     async openCampaign(campaignId) {
-        this.activeCampaign = this.campaignGroups.find(g => g.campaign_id === campaignId) || { campaign_id: campaignId, campaign_key: 'unknown', campaign_name: 'Unknown', count: 0 };
+        this.activeCampaign = this.campaignGroups.find(g => g.campaign_id === campaignId) || { campaign_id: campaignId, campaign_key: 'unknown', campaign_name: 'No matching campaign', count: 0 };
         this.campaignPage = 1;
         this.selectedEmails.clear();
 
