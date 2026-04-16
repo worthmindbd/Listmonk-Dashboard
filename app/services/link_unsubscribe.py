@@ -210,6 +210,9 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
                 # Partial success — still log the unsubscribe
 
         campaign = _pick_campaign_for_list_ids(campaigns, unsub_list_ids)
+        if campaign["campaign_id"] is None:
+            logger.info(f"[LINK] Skipping {email}: no campaign targets their list(s)")
+            continue
         primary_list_id = campaign.get("matched_list_id")
         list_name = list_id_to_name.get(primary_list_id, "")
 

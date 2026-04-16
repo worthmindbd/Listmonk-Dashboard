@@ -86,8 +86,8 @@ async def test_scan_processes_new_link_unsubscribe(tmp_path, monkeypatch):
         {"data": {"results": [{"id": 1, "name": "Newsletter"}], "total": 1}},
         # GET /api/subscribers (list 1, page 1) — 1 result, less than per_page → done
         {"data": {"results": [{"id": 55, "email": "new@example.com", "name": "New User", "lists": [{"id": 1}]}], "total": 1}},
-        # GET /api/campaigns (for campaign matching) — no campaigns
-        {"data": {"results": [], "total": 0}},
+        # GET /api/campaigns (for campaign matching) — 1 campaign targeting list 1
+        {"data": {"results": [{"id": 10, "name": "April Newsletter", "created_at": "2026-04-14", "lists": [{"id": 1}]}], "total": 1}},
         # PUT /api/subscribers/lists (unsubscribe from all)
         {"data": {}},
     ])
@@ -103,6 +103,8 @@ async def test_scan_processes_new_link_unsubscribe(tmp_path, monkeypatch):
     assert log[0]["email"] == "new@example.com"
     assert log[0]["source"] == "link"
     assert log[0]["keyword"] is None
+    assert log[0]["campaign_id"] == 10
+    assert log[0]["campaign_name"] == "April Newsletter"
 
 
 @pytest.mark.asyncio
