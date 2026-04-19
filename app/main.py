@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import RedirectResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from pathlib import Path
+import httpx
 
 from app.services.listmonk_client import listmonk
 from app.services.auto_unblock import find_blocklisted_clickers, unblock_subscribers, QUERY_BLOCKLISTED_CLICKERS
@@ -126,6 +127,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ListMonk Dashboard", lifespan=lifespan)
 app.add_middleware(AuthMiddleware)
+
+
+@app.exception_handler(httpx.HTTPStatusError)
+async def httpx_error_handler(request, exc):
+    raise HTTPException(status_code=exc.response.status_code, detail=str(exc))
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 jinja_templates = Jinja2Templates(directory=BASE_DIR / "templates")

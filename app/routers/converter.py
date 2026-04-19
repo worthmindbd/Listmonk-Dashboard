@@ -5,7 +5,6 @@ from app.services.csv_converter import detect_columns, convert_csv
 from app.services.listmonk_client import listmonk
 import json
 import io
-import httpx
 
 router = APIRouter()
 
@@ -75,22 +74,19 @@ async def convert_and_import(
         raise HTTPException(status_code=400, detail=result["stats"]["error"])
 
     # Import to ListMonk
-    try:
-        parsed_list_ids = json.loads(list_ids)
-        import_params = {
-            "mode": mode,
-            "delim": ",",
-            "lists": parsed_list_ids,
-            "overwrite": True,
-        }
-        import_result = await listmonk.import_subscribers(
-            result["csv_content"].encode("utf-8"),
-            "listmonk_import.csv",
-            import_params,
-        )
-        return {
-            "conversion_stats": result["stats"],
-            "import_result": import_result,
-        }
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    parsed_list_ids = json.loads(list_ids)
+    import_params = {
+        "mode": mode,
+        "delim": ",",
+        "lists": parsed_list_ids,
+        "overwrite": True,
+    }
+    import_result = await listmonk.import_subscribers(
+        result["csv_content"].encode("utf-8"),
+        "listmonk_import.csv",
+        import_params,
+    )
+    return {
+        "conversion_stats": result["stats"],
+        "import_result": import_result,
+    }

@@ -5,46 +5,17 @@ removes from all lists and optionally blocklists. Records in the shared
 unsubscribe_log.json with source="link".
 """
 
-import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 
 from app.services.listmonk_client import ListMonkClient
+from app.services.unsubscribe_log import (
+    load_log, save_log, load_settings, _log_lock,
+)
 
 logger = logging.getLogger("link_unsubscribe")
 
-# Module-level paths — patchable in tests via monkeypatch.setattr
-LOG_FILE = Path(__file__).resolve().parent.parent.parent / "unsubscribe_log.json"
-SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent / "unsubscribe_settings.json"
-
 PER_PAGE = 100  # Patchable in tests
-
-_DEFAULT_SETTINGS = {
-    "blocklist_enabled": False,
-}
-
-
-def load_log() -> list[dict]:
-    """Load the unsubscribe log from LOG_FILE (module-level, patchable in tests)."""
-    try:
-        return json.loads(LOG_FILE.read_text())
-    except (FileNotFoundError, json.JSONDecodeError, IsADirectoryError, PermissionError):
-        return []
-
-
-def save_log(records: list[dict]) -> None:
-    """Persist the unsubscribe log to LOG_FILE (module-level, patchable in tests)."""
-    LOG_FILE.write_text(json.dumps(records, indent=2, ensure_ascii=False))
-
-
-def load_settings() -> dict:
-    """Load scanner settings from SETTINGS_FILE (module-level, patchable in tests)."""
-    try:
-        data = json.loads(SETTINGS_FILE.read_text())
-        return {**_DEFAULT_SETTINGS, **data}
-    except (FileNotFoundError, json.JSONDecodeError, IsADirectoryError, PermissionError):
-        return dict(_DEFAULT_SETTINGS)
 
 
 def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
@@ -236,7 +207,6 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
         logger.info(f"[LINK] {action}: {email} (list: {list_name})")
 
     if new_records:
-        from app.services.imap_unsubscribe import _log_lock
         async with _log_lock:
             existing_log = load_log()
             existing_log.extend(new_records)

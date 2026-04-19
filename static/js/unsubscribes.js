@@ -43,7 +43,7 @@ const Unsubscribes = {
         if (source === 'link') {
             return '<span class="badge badge-primary" title="Clicked unsubscribe link">link click</span>';
         }
-        const kw = (record.keyword || 'email reply').replace(/</g, '&lt;');
+        const kw = App.escapeHtml(record.keyword || 'email reply');
         return `<span class="badge badge-warning" title="${kw}">email reply</span>`;
     },
 
@@ -71,7 +71,7 @@ const Unsubscribes = {
                 this.renderListView();
             }
         } catch (err) {
-            App.setContent(`<div class="empty-state"><h3>Failed to load unsubscribes</h3><p>${err.message || ''}</p></div>`);
+            App.setContent(`<div class="empty-state"><h3>Failed to load unsubscribes</h3><p>${App.escapeHtml(err.message || '')}</p></div>`);
         }
     },
 
@@ -179,7 +179,7 @@ const Unsubscribes = {
             html += '<div class="unsub-campaigns-list">';
             groups.forEach(g => {
                 const readableDate = this.formatCampaignDate(g.campaign_key);
-                const cleanName = this.cleanCampaignName(g.campaign_name).replace(/</g, '&lt;');
+                const cleanName = App.escapeHtml(this.cleanCampaignName(g.campaign_name));
                 const isClickable = Number.isInteger(g.campaign_id);
                 html += `
                     <div class="unsub-campaign-card" ${isClickable ? `onclick="Unsubscribes.openCampaign(${g.campaign_id})"` : 'style="cursor:default;opacity:0.75"'}>
@@ -232,7 +232,7 @@ const Unsubscribes = {
         const emailCount = data.email_count || 0;
         const hasSelected = this.selectedEmails.size > 0;
         const readableDate = this.formatCampaignDate(camp.campaign_key);
-        const cleanName = this.cleanCampaignName(camp.campaign_name).replace(/</g, '&lt;');
+        const cleanName = App.escapeHtml(this.cleanCampaignName(camp.campaign_name));
 
         // Top bar actions
         App.setActions(`

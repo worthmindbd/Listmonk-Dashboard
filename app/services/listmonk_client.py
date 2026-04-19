@@ -36,6 +36,29 @@ class ListMonkClient:
         resp.raise_for_status()
         return resp
 
+    async def paginate_all(self, fetch_fn, per_page: int = 500, **kwargs) -> list[dict]:
+        """Fetch all pages of a paginated endpoint into a single list.
+
+        Args:
+            fetch_fn: An async callable accepting page and per_page kwargs,
+                e.g. ``self.get_bounces``. Must return ``{"data": {"results": [...], "total": N}}``.
+            per_page: Page size for each request.
+            **kwargs: Additional keyword arguments forwarded to fetch_fn.
+        """
+        page = 1
+        all_items: list[dict] = []
+        while True:
+            result = await fetch_fn(page=page, per_page=per_page, **kwargs)
+            data = result.get("data", {})
+            results = data.get("results", [])
+            if not results:
+                break
+            all_items.extend(results)
+            if page * per_page >= data.get("total", 0):
+                break
+            page += 1
+        return all_items
+
     # ── Subscribers ──────────────────────────────────────────
 
     async def get_subscribers(self, page: int = 1, per_page: int = 50,

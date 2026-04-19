@@ -10,24 +10,20 @@ import asyncio
 import imaplib
 import email
 import email.policy
-import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Optional
 
 from app.config import settings
 from app.services.listmonk_client import ListMonkClient
+from app.services.unsubscribe_log import (
+    load_log, save_log, append_log, load_settings, save_settings,
+    _log_lock,
+)
+from app.services.imap_helpers import safe_email_for_query, imap_date, extract_email_body
 
 logger = logging.getLogger("imap_unsubscribe")
-
-LOG_FILE = Path(__file__).resolve().parent.parent.parent / "unsubscribe_log.json"
-SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent / "unsubscribe_settings.json"
-
-_DEFAULT_SETTINGS = {
-    "blocklist_enabled": False,
-}
 
 UNSUBSCRIBE_KEYWORDS = [
     "remove me",
@@ -40,89 +36,9 @@ KEYWORD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Lock to prevent TOCTOU races between background scans and API writes
-_log_lock = asyncio.Lock()
-
-from app.services.imap_helpers import safe_email_for_query, imap_date
-
-
-def _normalize_campaign_key(key: str) -> str:
-    """Convert old MM/YY keys to YYYY-MM format for proper sorting."""
-    if not key or '/' not in key:
-        return key
-    parts = key.split('/')
-    if len(parts) == 2 and len(parts[0]) == 2 and len(parts[1]) == 2:
-        month, year_short = parts
-        return f"20{year_short}-{month}"
-    return key
-
-
-def load_log() -> list[dict]:
-    try:
-        records = json.loads(LOG_FILE.read_text())
-        # Auto-migrate old MM/YY keys to YYYY-MM
-        migrated = False
-        for r in records:
-            old_key = r.get("campaign_key", "")
-            new_key = _normalize_campaign_key(old_key)
-            if new_key != old_key:
-                r["campaign_key"] = new_key
-                migrated = True
-        if migrated:
-            save_log(records)
-        return records
-    except (FileNotFoundError, json.JSONDecodeError, IsADirectoryError, PermissionError):
-        return []
-
-
-def save_log(records: list[dict]) -> None:
-    LOG_FILE.write_text(json.dumps(records, indent=2, ensure_ascii=False))
-
-
-async def append_log(new_records: list[dict]) -> None:
-    """Atomically append records to the log file under lock."""
-    async with _log_lock:
-        existing = load_log()
-        existing.extend(new_records)
-        save_log(existing)
-
-
-def load_settings() -> dict:
-    try:
-        data = json.loads(SETTINGS_FILE.read_text())
-        return {**_DEFAULT_SETTINGS, **data}
-    except (FileNotFoundError, json.JSONDecodeError, IsADirectoryError, PermissionError):
-        return dict(_DEFAULT_SETTINGS)
-
-
-def save_settings(data: dict) -> None:
-    merged = {**load_settings(), **data}
-    SETTINGS_FILE.write_text(json.dumps(merged, indent=2))
-
 
 def _extract_body(msg: email.message.EmailMessage) -> str:
-    """Extract plain-text body from an email message."""
-    body = ""
-    if msg.is_multipart():
-        for part in msg.walk():
-            content_type = part.get_content_type()
-            if content_type == "text/plain":
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    try:
-                        body += payload.decode(charset, errors="replace")
-                    except (LookupError, UnicodeDecodeError):
-                        body += payload.decode("utf-8", errors="replace")
-    else:
-        payload = msg.get_payload(decode=True)
-        if payload:
-            charset = msg.get_content_charset() or "utf-8"
-            try:
-                body = payload.decode(charset, errors="replace")
-            except (LookupError, UnicodeDecodeError):
-                body = payload.decode("utf-8", errors="replace")
-    return body
+    return extract_email_body(msg)
 
 
 def _extract_reply_only(full_body: str) -> str:
@@ -389,15 +305,17 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
 
             # Backfill: re-attribute any pre-fix email records once, so the
             # "Unsubscribes by Campaign" view self-heals on the next scan.
+            # Load log once and reuse across backfill, pruning, and dedup.
+            existing_log = load_log()
+
             if campaigns_list:
                 try:
-                    existing_for_backfill = load_log()
                     changed, removed = _reattribute_existing_records(
-                        existing_for_backfill, campaigns_list
+                        existing_log, campaigns_list
                     )
                     if changed or removed:
-                        cleaned = [r for r in existing_for_backfill if not r.get("_remove")]
-                        save_log(cleaned)
+                        existing_log = [r for r in existing_log if not r.get("_remove")]
+                        save_log(existing_log)
                         if changed:
                             print(f"[IMAP] Re-attributed {changed} existing records")
                             logger.info(f"Backfill: re-attributed {changed} existing records")
@@ -411,12 +329,12 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
             # Prune records whose campaign no longer exists in ListMonk.
             if campaigns_list:
                 try:
-                    existing_log = load_log()
                     valid_cids = {c.get("id") for c in campaigns_list}
                     pruned = [r for r in existing_log if r.get("campaign_id") in valid_cids]
                     removed_count = len(existing_log) - len(pruned)
                     if removed_count:
-                        save_log(pruned)
+                        existing_log = pruned
+                        save_log(existing_log)
                         print(f"[IMAP] Pruned {removed_count} records for deleted campaigns")
                         logger.info(f"Pruned {removed_count} records for deleted campaigns")
                 except Exception as e:
@@ -460,8 +378,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
             print(f"[IMAP] Found {scanned} emails in campaign period, scanning all")
             logger.info(f"IMAP scan: {scanned} emails in campaign period")
 
-            existing_log = load_log()
-            # Deduplicate using Message-ID header and sender email
+            # Deduplicate using Message-ID header and sender email (reuse existing_log)
             processed_msg_ids = {r.get("message_id") for r in existing_log if r.get("message_id")}
             processed_emails_set = {r["email"] for r in existing_log}
 

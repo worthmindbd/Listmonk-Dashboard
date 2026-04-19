@@ -11,8 +11,8 @@ A modern, dark-themed dashboard for managing your self-hosted [ListMonk](https:/
 - **Lists** - Create and manage lists with tags, type (public/private), optin settings
 - **Campaigns** - Full control: create, edit, start, pause, cancel, preview, test send
 - **Templates** - Create, edit, preview HTML templates
-- **Bounces** - View and filter by campaign, delete individual or all, export as CSV
-- **Unsubscribes** - IMAP-based auto-detection of unsubscribe requests from campaign replies
+- **Bounces** - View and filter by campaign or type (hard/soft), delete individual or all, export as CSV, ingest bounces from IMAP mailbox
+- **Unsubscribes** - IMAP-based auto-detection of unsubscribe requests from campaign replies + link-based unsubscribe scanning
 
 ### Analytics
 - **Dashboard** - Summary cards (subscribers, lists, campaigns) + performance charts
@@ -31,12 +31,22 @@ ListMonk requires a specific CSV format (`email`, `name`, `attributes` as JSON).
 ### IMAP Unsubscribe Monitor
 Automatically detects unsubscribe requests from campaign reply emails:
 - Scans your IMAP inbox every **1 hour** for keywords: `"Remove me"`, `"Unsubscribe me"`, `"Exclude me"`
-- Matches replies to the correct campaign by date
+- Matches replies to the correct campaign by date and subscriber list membership
 - Automatically **unsubscribes** the sender from all lists and **blocklists** them
+- Also scans for **link-based unsubscribes** (subscribers who clicked the unsubscribe link in emails)
 - Campaign-grouped dashboard with per-campaign management (export, bulk delete, remove list)
 - Uses IMAP `SINCE` filter to only scan emails from the latest campaign month (no wasted processing)
 - Concurrent scan protection with asyncio lock
 - Manual "Scan Now" button with loading state and timeout
+
+### Bounce Ingestion
+Automatically processes bounce emails from your IMAP mailbox:
+- Scans bounce IMAP mailbox every **1 hour** for unseen bounce Delivery Status Notifications
+- Classifies bounces as **hard** (invalid address) or **soft** (transient issues) using RFC 3463 enhanced status codes
+- Creates matching bounce records in ListMonk with campaign attribution
+- Hard bounces: user unknown, host unknown, mailbox disabled, null MX
+- Soft bounces: mailbox full, quota exceeded, blacklist/greylist, rate limit, content rejected
+- Bounces page filterable by campaign and type (hard/soft)
 
 ### Settings (Campaign Scheduler + Auto-Unblock)
 All automation is managed from the **Settings** page with tabbed UI:
@@ -177,12 +187,16 @@ ListMonk-Dashboard/
       converter.py             # CSV converter endpoints
       unsubscribes.py          # Unsubscribe management + IMAP scan trigger
     services/
-      listmonk_client.py       # Async API client for ListMonk
+      listmonk_client.py       # Async API client for ListMonk (with paginate_all helper)
       csv_converter.py         # CSV to ListMonk format converter
       export_service.py        # CSV streaming export utility
       auto_unblock.py          # Auto-unblock blocklisted clickers
       campaign_scheduler.py    # Campaign send window scheduler
+      bounce_ingest.py         # Bounce email classification and ingestion
       imap_unsubscribe.py      # IMAP inbox scanner for unsubscribe detection
+      imap_helpers.py          # Shared IMAP utilities (email parsing, body extraction)
+      link_unsubscribe.py      # Link-based unsubscribe scanner
+      unsubscribe_log.py       # Shared unsubscribe log and settings storage
   static/
     css/style.css              # Dark theme styles
     js/
@@ -193,7 +207,8 @@ ListMonk-Dashboard/
       subscribers.js           # Subscriber management
       campaigns.js             # Campaign management
       lists.js                 # List management
-      settings.js              # Settings page (scheduler + auto-unblock)
+      settings.js              # Settings page (scheduler + auto-unblock tabs)
+      bounces.js               # Bounce management (included in app.js)
       converter.js             # CSV converter UI
       unsubscribes.js          # Unsubscribe dashboard (campaign-grouped)
   templates/

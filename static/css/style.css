@@ -535,6 +535,12 @@ select option { background: var(--bg-secondary); }
     color: #fff;
 }
 
+.pagination-ellipsis {
+    color: var(--text-muted);
+    padding: 0 4px;
+    user-select: none;
+}
+
 .pagination-info {
     font-size: 0.85rem;
     color: var(--text-muted);

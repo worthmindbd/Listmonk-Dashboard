@@ -50,8 +50,12 @@ async def test_scan_skips_already_logged_emails(tmp_path, monkeypatch):
     log_file.write_text(json.dumps([
         {"email": "already@example.com", "source": "link"}
     ]))
-    monkeypatch.setattr(svc, "LOG_FILE", log_file)
-    monkeypatch.setattr(svc, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(svc, "LOG_FILE", log_file, raising=False)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", tmp_path / "settings.json", raising=False)
+    # Also patch the shared module that link_unsubscribe now imports from
+    import app.services.unsubscribe_log as shared_log
+    monkeypatch.setattr(shared_log, "LOG_FILE", log_file)
+    monkeypatch.setattr(shared_log, "SETTINGS_FILE", tmp_path / "settings.json")
 
     client = make_client()
     # Lists returns one list
@@ -77,8 +81,9 @@ async def test_scan_processes_new_link_unsubscribe(tmp_path, monkeypatch):
     log_file.write_text("[]")
     settings_file = tmp_path / "settings.json"
     settings_file.write_text('{"blocklist_enabled": false}')
-    monkeypatch.setattr(svc, "LOG_FILE", log_file)
-    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+    import app.services.unsubscribe_log as shared_log
+    monkeypatch.setattr(shared_log, "LOG_FILE", log_file)
+    monkeypatch.setattr(shared_log, "SETTINGS_FILE", settings_file)
 
     client = make_client()
     client._request = AsyncMock(side_effect=[
@@ -117,8 +122,11 @@ async def test_scan_blocklists_when_enabled(tmp_path, monkeypatch):
     log_file.write_text("[]")
     settings_file = tmp_path / "settings.json"
     settings_file.write_text('{"blocklist_enabled": true}')
-    monkeypatch.setattr(svc, "LOG_FILE", log_file)
-    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+    monkeypatch.setattr(svc, "LOG_FILE", log_file, raising=False)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file, raising=False)
+    import app.services.unsubscribe_log as shared_log
+    monkeypatch.setattr(shared_log, "LOG_FILE", log_file)
+    monkeypatch.setattr(shared_log, "SETTINGS_FILE", settings_file)
 
     client = make_client()
     blocklist_calls = []
@@ -152,8 +160,11 @@ async def test_scan_pagination_fetches_second_page(tmp_path, monkeypatch):
     log_file.write_text("[]")
     settings_file = tmp_path / "settings.json"
     settings_file.write_text('{"blocklist_enabled": false}')
-    monkeypatch.setattr(svc, "LOG_FILE", log_file)
-    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+    monkeypatch.setattr(svc, "LOG_FILE", log_file, raising=False)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file, raising=False)
+    import app.services.unsubscribe_log as shared_log
+    monkeypatch.setattr(shared_log, "LOG_FILE", log_file)
+    monkeypatch.setattr(shared_log, "SETTINGS_FILE", settings_file)
 
     per_page = 2  # small for test
     page_calls = []
@@ -200,8 +211,11 @@ async def test_scan_attributes_to_newest_campaign_across_lists(tmp_path, monkeyp
     log_file.write_text("[]")
     settings_file = tmp_path / "settings.json"
     settings_file.write_text('{"blocklist_enabled": false}')
-    monkeypatch.setattr(svc, "LOG_FILE", log_file)
-    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+    monkeypatch.setattr(svc, "LOG_FILE", log_file, raising=False)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file, raising=False)
+    import app.services.unsubscribe_log as shared_log
+    monkeypatch.setattr(shared_log, "LOG_FILE", log_file)
+    monkeypatch.setattr(shared_log, "SETTINGS_FILE", settings_file)
 
     # Same subscriber (id=100) appears as unsubscribed in BOTH list 1 and list 2.
     # Campaign 10 (older) targets list 1; campaign 20 (newer) targets list 2.
@@ -258,8 +272,11 @@ async def test_scan_does_not_log_on_unsubscribe_api_failure(tmp_path, monkeypatc
     log_file.write_text("[]")
     settings_file = tmp_path / "settings.json"
     settings_file.write_text('{"blocklist_enabled": false}')
-    monkeypatch.setattr(svc, "LOG_FILE", log_file)
-    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+    monkeypatch.setattr(svc, "LOG_FILE", log_file, raising=False)
+    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file, raising=False)
+    import app.services.unsubscribe_log as shared_log
+    monkeypatch.setattr(shared_log, "LOG_FILE", log_file)
+    monkeypatch.setattr(shared_log, "SETTINGS_FILE", settings_file)
 
     async def mock_request(method, path, **kwargs):
         if method == "GET" and path == "/api/lists":

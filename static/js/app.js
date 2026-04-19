@@ -50,6 +50,11 @@ const App = {
 
         this.currentPage = hash;
 
+        // Clear per-page state when navigating away
+        if (hash !== 'bounces' && typeof Bounces !== 'undefined') {
+            Bounces.campaigns = [];
+        }
+
         // Update nav
         document.querySelectorAll('.nav-link').forEach(link => {
             link.classList.toggle('active', link.dataset.page === hash);
@@ -202,10 +207,32 @@ const App = {
         const totalPages = Math.ceil(total / perPage);
         if (totalPages <= 1) return '';
 
+        // Build the list of page numbers to show (windowed with ellipsis)
+        const pages = [];
+        if (totalPages <= 7) {
+            for (let i = 1; i <= totalPages; i++) pages.push(i);
+        } else {
+            pages.push(1);
+            if (currentPage > 4) pages.push('...');
+            const start = Math.max(2, currentPage - 1);
+            const end = Math.min(totalPages - 1, currentPage + 1);
+            for (let i = start; i <= end; i++) pages.push(i);
+            if (currentPage < totalPages - 3) pages.push('...');
+            pages.push(totalPages);
+        }
+
         let html = '<div class="pagination">';
-        html += `<button class="btn btn-sm" ${currentPage <= 1 ? 'disabled' : ''} onclick="${onPageChange}(${currentPage - 1})">Prev</button>`;
-        html += `<span class="pagination-info">Page ${currentPage} of ${totalPages} (${total} total)</span>`;
-        html += `<button class="btn btn-sm" ${currentPage >= totalPages ? 'disabled' : ''} onclick="${onPageChange}(${currentPage + 1})">Next</button>`;
+        html += `<button class="btn btn-sm" ${currentPage <= 1 ? 'disabled' : ''} onclick="${onPageChange}(${currentPage - 1})">&#8592;</button>`;
+        for (const p of pages) {
+            if (p === '...') {
+                html += '<span class="pagination-ellipsis">&hellip;</span>';
+            } else {
+                const active = p === currentPage ? ' active' : '';
+                html += `<button class="btn btn-sm${active}" onclick="${onPageChange}(${p})">${p}</button>`;
+            }
+        }
+        html += `<button class="btn btn-sm" ${currentPage >= totalPages ? 'disabled' : ''} onclick="${onPageChange}(${currentPage + 1})">&#8594;</button>`;
+        html += `<span class="pagination-info">${App.formatNumber(total)} records</span>`;
         html += '</div>';
         return html;
     },
@@ -278,7 +305,7 @@ const Templates = {
                 html += '<tr><td colspan="7"><div class="empty-state"><h3>No templates found</h3></div></td></tr>';
             }
             templates.forEach(t => {
-                const name = (t.name || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const name = App.escapeHtml(t.name || '');
                 html += `<tr>
                     <td>${t.id}</td>
                     <td><strong>${name}</strong></td>
@@ -299,7 +326,7 @@ const Templates = {
             App.setContent(html);
         } catch (err) {
             console.error('Templates load error:', err);
-            App.setContent(`<div class="empty-state"><h3>Failed to load templates</h3><p>${err.message || ''}</p></div>`);
+            App.setContent(`<div class="empty-state"><h3>Failed to load templates</h3><p>${App.escapeHtml(err.message || '')}</p></div>`);
         }
     },
 
@@ -309,7 +336,7 @@ const Templates = {
         App.setContent(`
             <div style="margin-bottom:12px">
                 <button class="btn btn-secondary" onclick="Templates.render()">Back to Templates</button>
-                <span style="margin-left:12px;font-size:1.1rem;font-weight:600">${(t.name || '').replace(/</g, '&lt;')}</span>
+                <span style="margin-left:12px;font-size:1.1rem;font-weight:600">${App.escapeHtml(t.name || '')}</span>
             </div>
             <iframe class="preview-frame" srcdoc="${App.escapeHtml(t.body || '')}"></iframe>
         `);
@@ -340,7 +367,7 @@ const Templates = {
             <div class="inline-form">
                 <h3 style="margin-bottom:16px">Edit Template #${t.id}</h3>
                 <div class="form-group"><label>Name</label><input type="text" id="editTplName" value="${(t.name || '').replace(/"/g, '&quot;')}"></div>
-                <div class="form-group"><label>Body (HTML)</label><textarea id="editTplBody" rows="15">${(t.body || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea></div>
+                <div class="form-group"><label>Body (HTML)</label><textarea id="editTplBody" rows="15">${App.escapeHtml(t.body || '')}</textarea></div>
                 <div class="form-actions">
                     <button class="btn btn-primary" onclick="Templates.update(${t.id})">Update</button>
                     <button class="btn btn-secondary" onclick="Templates.render()">Cancel</button>
@@ -394,18 +421,22 @@ const Templates = {
 const Bounces = {
     page: 1,
     campaignFilter: 0,
+    typeFilter: '',
     campaigns: [],
 
     async render() {
         try {
+            // Fetch campaigns once or when missing
+            const fetchCampaigns = !this.campaigns.length
+                ? API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC')
+                : Promise.resolve(null);
+
             let params = `page=${this.page}&per_page=25`;
             if (this.campaignFilter) params += `&campaign_id=${this.campaignFilter}`;
+            if (this.typeFilter) params += `&bounce_type=${this.typeFilter}`;
 
-            // Fetch campaigns (for filter) and bounces in parallel
             const [campRes, result] = await Promise.all([
-                this.campaigns.length
-                    ? Promise.resolve(null)
-                    : API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC'),
+                fetchCampaigns,
                 API.get(`/api/bounces?${params}`),
             ]);
             if (campRes) this.campaigns = campRes?.data?.results || [];
@@ -418,7 +449,6 @@ const Bounces = {
                 `<option value="${c.id}" ${c.id === this.campaignFilter ? 'selected' : ''}>${App.escapeHtml(c.name)} (${c.status})</option>`
             ).join('');
 
-            // Count by type for the filtered set info
             const filterLabel = this.campaignFilter
                 ? this.campaigns.find(c => c.id === this.campaignFilter)?.name || `#${this.campaignFilter}`
                 : 'All campaigns';
@@ -435,6 +465,11 @@ const Bounces = {
                         <option value="0" ${!this.campaignFilter ? 'selected' : ''}>All Campaigns</option>
                         ${campOptions}
                     </select>
+                    <select id="bounceTypeFilter" onchange="Bounces.filterType(this.value)" style="width:auto;min-width:140px">
+                        <option value="" ${!this.typeFilter ? 'selected' : ''}>All Types</option>
+                        <option value="hard" ${this.typeFilter === 'hard' ? 'selected' : ''}>Hard Bounce</option>
+                        <option value="soft" ${this.typeFilter === 'soft' ? 'selected' : ''}>Soft Bounce</option>
+                    </select>
                     <span style="color:var(--text-secondary);font-size:0.9rem">
                         ${App.formatNumber(total)} bounce records
                         ${this.campaignFilter ? ' for ' + filterLabel : ''}
@@ -450,7 +485,7 @@ const Bounces = {
                 html += '<tr><td colspan="7"><div class="empty-state"><h3>No bounces found</h3></div></td></tr>';
             }
             bounces.forEach(b => {
-                const campName = (b.campaign?.name || '-').replace(/</g, '&lt;');
+                const campName = App.escapeHtml(b.campaign?.name || '-');
                 html += `<tr>
                     <td>${b.id}</td>
                     <td><strong>${App.escapeHtml(b.email || '-')}</strong></td>
@@ -466,12 +501,18 @@ const Bounces = {
             html += App.renderPagination(this.page, total, 25, 'Bounces.goToPage');
             App.setContent(html);
         } catch (err) {
-            App.setContent(`<div class="empty-state"><h3>Failed to load bounces</h3><p>${err.message || ''}</p></div>`);
+            App.setContent(`<div class="empty-state"><h3>Failed to load bounces</h3><p>${App.escapeHtml(err.message || '')}</p></div>`);
         }
     },
 
     filterCampaign(val) {
         this.campaignFilter = parseInt(val) || 0;
+        this.page = 1;
+        this.render();
+    },
+
+    filterType(val) {
+        this.typeFilter = val;
         this.page = 1;
         this.render();
     },
@@ -485,13 +526,24 @@ const Bounces = {
     },
 
     _campaignLabel() {
-        if (!this.campaignFilter) return 'All Campaigns';
-        return this.campaigns.find(c => c.id === this.campaignFilter)?.name
-            || `#${this.campaignFilter}`;
+        let label = '';
+        if (this.campaignFilter) {
+            label = this.campaigns.find(c => c.id === this.campaignFilter)?.name
+                || `#${this.campaignFilter}`;
+        } else {
+            label = 'All Campaigns';
+        }
+        if (this.typeFilter) {
+            label += ` (${this.typeFilter} bounces only)`;
+        }
+        return label;
     },
 
     _campaignQuery() {
-        return this.campaignFilter ? `?campaign_id=${this.campaignFilter}` : '';
+        const params = [];
+        if (this.campaignFilter) params.push(`campaign_id=${this.campaignFilter}`);
+        if (this.typeFilter) params.push(`bounce_type=${this.typeFilter}`);
+        return params.length ? `?${params.join('&')}` : '';
     },
 
     async deleteAll() {

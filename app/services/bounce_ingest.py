@@ -25,7 +25,7 @@ from app.services.listmonk_client import ListMonkClient
 
 logger = logging.getLogger("bounce_ingest")
 
-from app.services.imap_helpers import safe_email_for_query, imap_date
+from app.services.imap_helpers import safe_email_for_query, imap_date, extract_email_body
 
 
 # ─── Classification ──────────────────────────────────────────────────────────
@@ -121,29 +121,11 @@ def classify_bounce(body: str, subject: str = "") -> dict:
 
 # ─── Parsing helpers ─────────────────────────────────────────────────────────
 
+_BOUNCE_CONTENT_TYPES = ("text/plain", "message/delivery-status")
+
+
 def _extract_body(msg: email.message.EmailMessage) -> str:
-    body = ""
-    if msg.is_multipart():
-        for part in msg.walk():
-            ct = part.get_content_type()
-            if ct in ("text/plain", "message/delivery-status"):
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    try:
-                        body += payload.decode(charset, errors="replace")
-                    except (LookupError, UnicodeDecodeError):
-                        body += payload.decode("utf-8", errors="replace")
-                    body += "\n"
-    else:
-        payload = msg.get_payload(decode=True)
-        if payload:
-            charset = msg.get_content_charset() or "utf-8"
-            try:
-                body = payload.decode(charset, errors="replace")
-            except (LookupError, UnicodeDecodeError):
-                body = payload.decode("utf-8", errors="replace")
-    return body
+    return extract_email_body(msg, content_types=_BOUNCE_CONTENT_TYPES)
 
 
 def _extract_bounced_recipient(msg: email.message.EmailMessage, body: str) -> Optional[str]:

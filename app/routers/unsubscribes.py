@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from app.services.imap_unsubscribe import (
-    load_log, save_log, get_stats, check_imap_status, scan_and_unsubscribe,
-    load_settings, save_settings,
+    get_stats, check_imap_status, scan_and_unsubscribe,
 )
+from app.services.unsubscribe_log import load_log, save_log, load_settings, save_settings
 from app.services.link_unsubscribe import scan_link_unsubscribes
 from app.services.listmonk_client import listmonk
 from app.services.export_service import dict_list_to_csv

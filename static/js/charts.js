@@ -77,9 +77,9 @@ const Dashboard = {
                             <tbody>`;
 
             campaigns.slice(0, 5).forEach(c => {
-                const listNames = (c.lists || []).map(l => l.name).join(', ') || '-';
+                const listNames = (c.lists || []).map(l => App.escapeHtml(l.name)).join(', ') || '-';
                 html += `<tr style="cursor:pointer" onclick="Campaigns.showDetail(${c.id})">
-                    <td><strong>${c.name}</strong></td>
+                    <td><strong>${App.escapeHtml(c.name)}</strong></td>
                     <td>${App.statusBadge(c.status)}</td>
                     <td>${listNames}</td>
                     <td>${App.formatDate(c.created_at)}</td>
@@ -98,7 +98,7 @@ const Dashboard = {
             this.renderStatusChart(campaigns);
 
         } catch (err) {
-            App.setContent(`<div class="empty-state"><h3>Failed to load dashboard</h3><p>${err.message}</p></div>`);
+            App.setContent(`<div class="empty-state"><h3>Failed to load dashboard</h3><p>${App.escapeHtml(err.message)}</p></div>`);
         }
     },
 
@@ -109,14 +109,8 @@ const Dashboard = {
         const recent = campaigns.slice(0, 8).reverse();
         const labels = recent.map(c => c.name?.substring(0, 20) || 'Untitled');
         const sent = recent.map(c => c.to_send || 0);
-        const views = recent.map(c => {
-            if (c.stats) return c.stats.views || 0;
-            return 0;
-        });
-        const clicks = recent.map(c => {
-            if (c.stats) return c.stats.clicks || 0;
-            return 0;
-        });
+        const views = recent.map(c => c.views || 0);
+        const clicks = recent.map(c => c.clicks || 0);
 
         if (this.charts.campaign) this.charts.campaign.destroy();
         this.charts.campaign = new Chart(ctx, {

@@ -1,53 +1,34 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from app.services.listmonk_client import listmonk
-import httpx
 
 router = APIRouter()
 
 
 @router.get("")
 async def get_templates():
-    try:
-        return await listmonk.get_templates()
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    return await listmonk.get_templates()
 
 
 @router.get("/{template_id}")
 async def get_template(template_id: int):
-    try:
-        return await listmonk.get_template(template_id)
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    return await listmonk.get_template(template_id)
 
 
 @router.post("")
 async def create_template(data: dict):
-    try:
-        return await listmonk.create_template(data)
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    return await listmonk.create_template(data)
 
 
 @router.put("/{template_id}")
 async def update_template(template_id: int, data: dict):
-    try:
-        return await listmonk.update_template(template_id, data)
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    return await listmonk.update_template(template_id, data)
 
 
 @router.put("/{template_id}/default")
 async def set_default_template(template_id: int):
-    try:
-        return await listmonk.set_default_template(template_id)
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    return await listmonk.set_default_template(template_id)
 
 
 @router.delete("/{template_id}")
 async def delete_template(template_id: int):
-    try:
-        return await listmonk.delete_template(template_id)
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    return await listmonk.delete_template(template_id)

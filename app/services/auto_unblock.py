@@ -8,8 +8,8 @@ Being blocklisted (usually from a bounce) is a false positive.
 
 import asyncio
 import logging
-from datetime import datetime
-from app.services.listmonk_client import ListMonkClient
+from datetime import datetime, timezone
+from app.services.listmonk_client import ListMonkClient, listmonk as listmonk_singleton
 from app.config import settings
 
 logger = logging.getLogger("auto_unblock")
@@ -22,42 +22,17 @@ QUERY_BLOCKLISTED_CLICKERS = (
 
 async def find_blocklisted_clickers(client: ListMonkClient) -> list[dict]:
     """Find all subscribers who clicked but are blocklisted."""
-    all_subs = []
-    page = 1
-    while True:
-        result = await client.get_subscribers(page, 500, QUERY_BLOCKLISTED_CLICKERS)
-        data = result.get("data", {})
-        results = data.get("results", [])
-        if not results:
-            break
-        all_subs.extend(results)
-        if page * 500 >= data.get("total", 0):
-            break
-        page += 1
-    return all_subs
+    return await client.paginate_all(
+        client.get_subscribers, per_page=500, query=QUERY_BLOCKLISTED_CLICKERS,
+    )
 
 
 async def delete_bounce_records(client: ListMonkClient, emails: set[str]) -> int:
     """Delete all bounce records for the given email addresses."""
     deleted = 0
-    page = 1
-    bounce_ids_to_delete = []
+    all_bounces = await client.paginate_all(client.get_bounces, per_page=500)
+    bounce_ids_to_delete = [b["id"] for b in all_bounces if b.get("email") in emails]
 
-    # Collect all bounce IDs for these emails
-    while True:
-        result = await client.get_bounces(page, 500)
-        data = result.get("data", {})
-        results = data.get("results", [])
-        if not results:
-            break
-        for b in results:
-            if b.get("email") in emails:
-                bounce_ids_to_delete.append(b["id"])
-        if page * 500 >= data.get("total", 0):
-            break
-        page += 1
-
-    # Delete them
     for bid in bounce_ids_to_delete:
         try:
             await client.delete_bounce(bid)
@@ -103,24 +78,33 @@ async def unblock_subscribers(client: ListMonkClient, subscribers: list[dict]) -
         "failed": failed,
         "bounces_deleted": bounces_deleted,
         "unblocked": unblocked,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
 async def run_auto_unblock() -> dict:
-    """Main entry point: find and unblock all blocklisted clickers."""
-    client = ListMonkClient()
-    await client.start()
+    """Main entry point: find and unblock all blocklisted clickers.
+    Uses the singleton client when available, falls back to creating one."""
     try:
-        subs = await find_blocklisted_clickers(client)
+        subs = await find_blocklisted_clickers(listmonk_singleton)
         if not subs:
             logger.info("No blocklisted clickers found")
             return {"success": 0, "failed": 0, "bounces_deleted": 0,
-                    "unblocked": [], "timestamp": datetime.utcnow().isoformat()}
+                    "unblocked": [], "timestamp": datetime.now(timezone.utc).isoformat()}
         logger.info(f"Found {len(subs)} blocklisted clicker(s) to unblock")
-        return await unblock_subscribers(client, subs)
-    finally:
-        await client.close()
+        return await unblock_subscribers(listmonk_singleton, subs)
+    except RuntimeError:
+        # Singleton not started (CLI usage) — create standalone client
+        client = ListMonkClient()
+        await client.start()
+        try:
+            subs = await find_blocklisted_clickers(client)
+            if not subs:
+                return {"success": 0, "failed": 0, "bounces_deleted": 0,
+                        "unblocked": [], "timestamp": datetime.now(timezone.utc).isoformat()}
+            return await unblock_subscribers(client, subs)
+        finally:
+            await client.close()
 
 
 # Standalone CLI usage
