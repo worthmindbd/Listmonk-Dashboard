@@ -19,31 +19,8 @@ def _engagement_query(campaign_id: int, engagement_type: str) -> str | None:
 async def get_campaigns(page: int = 1, per_page: int = 50,
                         query: str = "", status: str = "",
                         order_by: str = "created_at", order: str = "DESC"):
-    result = await listmonk.get_campaigns(page, per_page, query, status,
-                                          order_by, order)
-
-    # Override bounce counts to show only hard bounces
-    campaigns = result.get("data", {}).get("results", [])
-    if campaigns:
-        all_bounces = await listmonk.paginate_all(
-            listmonk.get_bounces, per_page=500,
-        )
-        hard_bounces = [b for b in all_bounces if b.get("type") == "hard"]
-
-        # Count hard bounces per campaign
-        hard_counts = {}
-        for b in hard_bounces:
-            cid = b.get("campaign", {}).get("id")
-            if cid:
-                hard_counts[cid] = hard_counts.get(cid, 0) + 1
-
-        # Replace bounce counts
-        for c in campaigns:
-            cid = c.get("id")
-            if cid in hard_counts:
-                c["bounces"] = hard_counts[cid]
-
-    return result
+    return await listmonk.get_campaigns(page, per_page, query, status,
+                                        order_by, order)
 
 
 @router.get("/running/stats")
@@ -81,30 +58,11 @@ async def export_campaign_analytics(analytics_type: str,
 @router.get("/export-all")
 async def export_all_campaigns():
     """Export all campaigns summary as CSV."""
-    # Fetch all campaigns
     all_campaigns = await listmonk.paginate_all(
         listmonk.get_campaigns, per_page=100,
     )
     if not all_campaigns:
         raise HTTPException(status_code=404, detail="No campaigns found")
-
-    # Count hard bounces per campaign
-    all_bounces = await listmonk.paginate_all(
-        listmonk.get_bounces, per_page=500,
-    )
-    hard_bounces = [b for b in all_bounces if b.get("type") == "hard"]
-
-    hard_counts = {}
-    for b in hard_bounces:
-        cid = b.get("campaign", {}).get("id")
-        if cid:
-            hard_counts[cid] = hard_counts.get(cid, 0) + 1
-
-    # Replace bounce counts with hard bounce counts
-    for c in all_campaigns:
-        cid = c.get("id")
-        if cid in hard_counts:
-            c["bounces"] = hard_counts[cid]
 
     columns = ["id", "name", "subject", "status", "type", "to_send", "sent",
                 "views", "clicks", "bounces", "created_at", "started_at"]
