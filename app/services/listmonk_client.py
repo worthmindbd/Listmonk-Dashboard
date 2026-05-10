@@ -240,12 +240,15 @@ class ListMonkClient:
 
     async def get_bounces(self, page: int = 1, per_page: int = 50,
                           campaign_id: Optional[int] = None,
-                          source: str = "") -> dict:
+                          source: str = "",
+                          bounce_type: str = "") -> dict:
         params: dict[str, Any] = {"page": page, "per_page": per_page}
         if campaign_id:
             params["campaign_id"] = campaign_id
         if source:
             params["source"] = source
+        if bounce_type:
+            params["bounce_type"] = bounce_type
         return await self._request("GET", "/api/bounces", params=params)
 
     async def delete_bounce(self, bounce_id: int) -> dict:

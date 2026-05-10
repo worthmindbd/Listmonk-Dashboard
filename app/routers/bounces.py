@@ -19,9 +19,9 @@ _FETCH_CONCURRENCY = 5
 _filtered_cache: dict[tuple, list[dict]] = {}
 
 
-async def _fetch_all_bounces_concurrent(campaign_id, source) -> list[dict]:
+async def _fetch_all_bounces_concurrent(campaign_id, source, bounce_type: str = "") -> list[dict]:
     """Fetch all bounce pages from ListMonk concurrently after page 1 reveals total."""
-    r = await listmonk.get_bounces(1, _FETCH_PAGE_SIZE, campaign_id, source)
+    r = await listmonk.get_bounces(1, _FETCH_PAGE_SIZE, campaign_id, source, bounce_type)
     data = r.get("data", {})
     total = data.get("total", 0)
     first_results = data.get("results", [])
@@ -33,7 +33,7 @@ async def _fetch_all_bounces_concurrent(campaign_id, source) -> list[dict]:
 
     async def _fetch_page(p: int) -> list[dict]:
         async with sem:
-            r = await listmonk.get_bounces(p, _FETCH_PAGE_SIZE, campaign_id, source)
+            r = await listmonk.get_bounces(p, _FETCH_PAGE_SIZE, campaign_id, source, bounce_type)
             return r.get("data", {}).get("results", [])
 
     pages = await asyncio.gather(*(_fetch_page(i + 2) for i in range(remaining_pages)))
@@ -65,7 +65,7 @@ async def get_bounces(page: int = 1, per_page: int = 50,
     # ListMonk has no server-side type filter — fetch all, filter, cache.
     cache_key = (campaign_id, source, bounce_type)
     if cache_key not in _filtered_cache:
-        all_bounces = await _fetch_all_bounces_concurrent(campaign_id, source)
+        all_bounces = await _fetch_all_bounces_concurrent(campaign_id, source, bounce_type)
         _filtered_cache[cache_key] = [
             b for b in all_bounces if b.get("type") == bounce_type
         ]
