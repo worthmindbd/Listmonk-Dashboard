@@ -35,8 +35,8 @@
 
 Open `requirements.txt` and append these two lines:
 ```
-pytest==8.3.5
-pytest-asyncio==0.24.0
+pytest==9.0.3
+pytest-asyncio==1.3.0
 ```
 
 - [ ] **Step 2: Install the new dependencies**
@@ -44,7 +44,7 @@ pytest-asyncio==0.24.0
 Run from the project root (activate venv first if not already active):
 ```bash
 source venv/bin/activate
-pip install pytest==8.3.5 pytest-asyncio==0.24.0
+pip install pytest==9.0.3 pytest-asyncio==1.3.0
 ```
 Expected: Both packages install without errors.
 

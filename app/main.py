@@ -5,10 +5,10 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from pathlib import Path
+from jinja2 import Environment, FileSystemLoader
 import httpx
 
 from app.services.listmonk_client import listmonk
@@ -134,7 +134,7 @@ async def httpx_error_handler(request, exc):
     raise HTTPException(status_code=exc.response.status_code, detail=str(exc))
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-jinja_templates = Jinja2Templates(directory=BASE_DIR / "templates")
+jinja_env = Environment(loader=FileSystemLoader(BASE_DIR / "templates"))
 
 # Include routers
 app.include_router(subscribers.router, prefix="/api/subscribers", tags=["Subscribers"])
@@ -146,13 +146,20 @@ app.include_router(converter.router, prefix="/api/converter", tags=["CSV Convert
 app.include_router(unsubscribes.router, prefix="/api/unsubscribes", tags=["Unsubscribes"])
 
 
+# ── Template Helper ───────────────────────────────────────
+
+def render_template(name: str, context: dict) -> HTMLResponse:
+    template = jinja_env.get_template(name)
+    return HTMLResponse(template.render(**context))
+
+
 # ── Auth Routes ──────────────────────────────────────────
 
 @app.get("/auth/login")
 async def login_page(request: Request):
     if verify_session(request):
         return RedirectResponse("/", status_code=302)
-    return jinja_templates.TemplateResponse("login.html", {"request": request})
+    return render_template("login.html", {"request": request})
 
 
 @app.post("/auth/login")
@@ -180,7 +187,7 @@ async def logout():
 
 @app.get("/")
 async def index(request: Request):
-    return jinja_templates.TemplateResponse("index.html", {"request": request})
+    return render_template("index.html", {"request": request})
 
 
 # ── Auto-Unblock Endpoints ───────────────────────────────

@@ -421,7 +421,7 @@ const Templates = {
 const Bounces = {
     page: 1,
     campaignFilter: 0,
-    typeFilter: '',
+    typeFilter: 'hard',
     campaigns: [],
 
     async render() {
@@ -465,24 +465,19 @@ const Bounces = {
                         <option value="0" ${!this.campaignFilter ? 'selected' : ''}>All Campaigns</option>
                         ${campOptions}
                     </select>
-                    <select id="bounceTypeFilter" onchange="Bounces.filterType(this.value)" style="width:auto;min-width:140px">
-                        <option value="" ${!this.typeFilter ? 'selected' : ''}>All Types</option>
-                        <option value="hard" ${this.typeFilter === 'hard' ? 'selected' : ''}>Hard Bounce</option>
-                        <option value="soft" ${this.typeFilter === 'soft' ? 'selected' : ''}>Soft Bounce</option>
-                    </select>
                     <span style="color:var(--text-secondary);font-size:0.9rem">
-                        ${App.formatNumber(total)} bounce records
+                        ${App.formatNumber(total)} bounces
                         ${this.campaignFilter ? ' for ' + filterLabel : ''}
                     </span>
                     <div style="flex:1"></div>
                 </div>
                 <div class="table-wrapper"><table>
                     <thead><tr>
-                        <th>ID</th><th>Email</th><th>Campaign</th><th>Source</th><th>Type</th><th>Date</th><th>Actions</th>
+                        <th>ID</th><th>Email</th><th>Campaign</th><th>Source</th><th>Date</th><th>Actions</th>
                     </tr></thead><tbody>`;
 
             if (!bounces.length) {
-                html += '<tr><td colspan="7"><div class="empty-state"><h3>No bounces found</h3></div></td></tr>';
+                html += '<tr><td colspan="6"><div class="empty-state"><h3>No hard bounces found</h3></div></td></tr>';
             }
             bounces.forEach(b => {
                 const campName = App.escapeHtml(b.campaign?.name || '-');
@@ -491,7 +486,6 @@ const Bounces = {
                     <td><strong>${App.escapeHtml(b.email || '-')}</strong></td>
                     <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis">${campName}</td>
                     <td>${b.source || '-'}</td>
-                    <td><span class="badge badge-${b.type === 'hard' ? 'danger' : 'warning'}">${b.type || 'unknown'}</span></td>
                     <td>${App.formatDate(b.created_at)}</td>
                     <td><button class="btn btn-sm btn-danger" onclick="Bounces.remove(${b.id})">Delete</button></td>
                 </tr>`;
@@ -507,12 +501,6 @@ const Bounces = {
 
     filterCampaign(val) {
         this.campaignFilter = parseInt(val) || 0;
-        this.page = 1;
-        this.render();
-    },
-
-    filterType(val) {
-        this.typeFilter = val;
         this.page = 1;
         this.render();
     },
