@@ -28,13 +28,13 @@ async def ingest_bounces():
 @router.get("")
 async def get_bounces(page: int = 1, per_page: int = 50,
                       campaign_id: Optional[int] = None, source: str = "",
-                      bounce_type: str = "hard"):
+                      bounce_type: str = ""):
     return await listmonk.get_bounces(page, per_page, campaign_id, source, bounce_type)
 
 
 @router.get("/export")
 async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
-                         bounce_type: str = "hard"):
+                         bounce_type: str = ""):
     """Export all bounce records (optionally filtered) as CSV."""
     all_bounces = await listmonk.paginate_all(
         listmonk.get_bounces, per_page=500,
@@ -52,7 +52,8 @@ async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
     suffix = ""
     if campaign_id:
         suffix += f"_campaign_{campaign_id}"
-    suffix += f"_{bounce_type}"
+    if bounce_type:
+        suffix += f"_{bounce_type}"
     return StreamingResponse(
         dict_list_to_csv(all_bounces, columns),
         media_type="text/csv",
@@ -73,7 +74,7 @@ async def delete_all_bounces(campaign_id: Optional[int] = None):
         return await listmonk.delete_all_bounces()
 
     bounce_ids = await listmonk.paginate_all(
-        listmonk.get_bounces, per_page=500, campaign_id=campaign_id, bounce_type="hard",
+        listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
     )
     bounce_ids = [b["id"] for b in bounce_ids]
 

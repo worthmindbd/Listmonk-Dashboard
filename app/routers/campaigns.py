@@ -78,7 +78,7 @@ async def get_campaign_subscribers(campaign_id: int, engagement_type: str,
                                    page: int = 1, per_page: int = 50):
     """Get subscribers who viewed/clicked/bounced for a campaign."""
     if engagement_type == "bounces":
-        return await listmonk.get_bounces(page, per_page, campaign_id, bounce_type="hard")
+        return await listmonk.get_bounces(page, per_page, campaign_id)
 
     query = _engagement_query(campaign_id, engagement_type)
     if not query:
@@ -92,7 +92,7 @@ async def export_campaign_subscribers(campaign_id: int, engagement_type: str):
     """Export subscribers who viewed/clicked/bounced a campaign as CSV."""
     if engagement_type == "bounces":
         all_records = await listmonk.paginate_all(
-            listmonk.get_bounces, per_page=500, campaign_id=campaign_id, bounce_type="hard",
+            listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
         )
         if not all_records:
             raise HTTPException(status_code=404, detail="No bounce records found")
