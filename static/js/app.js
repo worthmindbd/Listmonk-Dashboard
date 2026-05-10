@@ -421,7 +421,7 @@ const Templates = {
 const Bounces = {
     page: 1,
     campaignFilter: 0,
-    typeFilter: 'hard',
+    typeFilter: '',
     campaigns: [],
 
     async render() {
@@ -477,7 +477,7 @@ const Bounces = {
                     </tr></thead><tbody>`;
 
             if (!bounces.length) {
-                html += '<tr><td colspan="6"><div class="empty-state"><h3>No hard bounces found</h3></div></td></tr>';
+                html += '<tr><td colspan="6"><div class="empty-state"><h3>No bounces found</h3></div></td></tr>';
             }
             bounces.forEach(b => {
                 const campName = App.escapeHtml(b.campaign?.name || '-');
