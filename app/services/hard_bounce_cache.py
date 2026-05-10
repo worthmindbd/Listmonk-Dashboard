@@ -17,6 +17,11 @@ BATCH_SIZE = 500
 UPDATE_INTERVAL = 5 * 60  # 5 minutes
 
 
+def _is_client_ready() -> bool:
+    """Check if ListMonk client is ready (has valid HTTP client)."""
+    return listmonk._client is not None
+
+
 async def update_hard_bounce_counts():
     """Fetch all bounces and count hard bounces per campaign."""
     global _hard_bounce_counts, _last_updated
@@ -39,7 +44,7 @@ async def update_hard_bounce_counts():
         _last_updated = datetime.now().isoformat()
         logger.info(f"Hard bounce counts updated: {len(counts)} campaigns")
     except Exception as e:
-        logger.error(f"Failed to update hard bounce counts: {e}")
+        logger.error(f"Failed to update hard bounce counts: {e}", exc_info=True)
 
 
 def get_hard_bounce_count(campaign_id: int) -> int:
@@ -60,6 +65,12 @@ def get_last_updated() -> str:
 async def start_cache_updater():
     """Background task to keep cache updated."""
     logger.info("Starting hard bounce cache updater")
+
+    # Wait for client to be ready before first update
+    for _ in range(10):  # Wait up to 5 seconds
+        if _is_client_ready():
+            break
+        await asyncio.sleep(0.5)
 
     # Initial update
     await update_hard_bounce_counts()

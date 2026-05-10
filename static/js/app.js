@@ -508,7 +508,7 @@ const Bounces = {
     },
 
     async _fetchAllBounces() {
-        // Fetch all bounces in batches (ListMonk max 500 per page)
+        // Fetch hard bounces only (server-side filtering + caching)
         if (this._allBounces.length) return this._allBounces;
 
         const all = [];
@@ -516,11 +516,11 @@ const Bounces = {
         let hasMore = true;
 
         while (hasMore) {
-            const result = await API.get(`/api/bounces?page=${page}&per_page=500`);
+            const result = await API.get(`/api/bounces?page=${page}&per_page=500&bounce_type=hard`);
             const data = result?.data || {};
             const results = data.results || [];
             all.push(...results);
-            hasMore = results.length === 500;
+            hasMore = results.length === 500 && page * 500 < data.total;
             page++;
         }
 

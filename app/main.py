@@ -34,6 +34,7 @@ _auto_unblock_task = None
 _scheduler_task = None
 _imap_scan_task = None
 _bounce_ingest_task = None
+_hard_bounce_cache_task = None
 
 
 # ── Auth Middleware ───────────────────────────────────────
@@ -109,19 +110,20 @@ async def bounce_ingest_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _auto_unblock_task, _scheduler_task, _imap_scan_task, _bounce_ingest_task
+    global _auto_unblock_task, _scheduler_task, _imap_scan_task, _bounce_ingest_task, _hard_bounce_cache_task
     await listmonk.start()
     _auto_unblock_task = asyncio.create_task(auto_unblock_loop())
     _scheduler_task = asyncio.create_task(scheduler_loop(listmonk))
     _imap_scan_task = asyncio.create_task(imap_scan_loop())
     _bounce_ingest_task = asyncio.create_task(bounce_ingest_loop())
-    asyncio.create_task(start_cache_updater())
+    _hard_bounce_cache_task = asyncio.create_task(start_cache_updater())
     logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP+link scan (1h), bounce ingest (1h), hard bounce cache (5min)")
     yield
     _auto_unblock_task.cancel()
     _scheduler_task.cancel()
     _imap_scan_task.cancel()
     _bounce_ingest_task.cancel()
+    _hard_bounce_cache_task.cancel()
     await listmonk.close()
 
 

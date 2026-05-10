@@ -11,6 +11,20 @@ from app.services.hard_bounce_cache import update_hard_bounce_counts
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# In-memory cache for filtered bounces
+_FILTER_CACHE: dict[str, list[dict]] = {}
+
+
+def _cache_key(campaign_id: Optional[int], source: str, bounce_type: str) -> str:
+    """Generate cache key for bounce filter."""
+    return f"{campaign_id or 'all'}:{source}:{bounce_type}"
+
+
+def _invalidate_cache():
+    """Clear the bounce filter cache."""
+    global _FILTER_CACHE
+    _FILTER_CACHE.clear()
+
 _DELETE_CONCURRENCY = 10
 
 

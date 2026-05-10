@@ -151,7 +151,25 @@ async def export_campaign_subscribers(campaign_id: int, engagement_type: str):
 
 @router.get("/{campaign_id}")
 async def get_campaign(campaign_id: int):
-    return await listmonk.get_campaign(campaign_id)
+    result = await listmonk.get_campaign(campaign_id)
+
+    # Replace bounce count with hard bounces from cache
+    campaign = result.get("data", {})
+    if campaign:
+        cached_counts = get_all_hard_bounce_counts()
+        hard_count = cached_counts.get(campaign_id)
+
+        # Fallback: if cache is empty, fetch hard bounces directly for this campaign
+        if hard_count is None and not cached_counts:
+            all_bounces = await listmonk.paginate_all(
+                listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
+            )
+            hard_count = sum(1 for b in all_bounces if b.get("type") == "hard")
+
+        if hard_count is not None:
+            campaign["bounces"] = hard_count
+
+    return result
 
 
 @router.get("/{campaign_id}/preview")
