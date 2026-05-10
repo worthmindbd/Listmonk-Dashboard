@@ -6,20 +6,12 @@ from typing import Optional
 from app.services.listmonk_client import listmonk
 from app.services.bounce_ingest import ingest_bounce_mailbox
 from app.services.export_service import dict_list_to_csv
+from app.services.hard_bounce_cache import update_hard_bounce_counts
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _DELETE_CONCURRENCY = 10
-_FILTER_CACHE: dict[tuple, list[dict]] = {}
-
-
-def _cache_key(campaign_id, source, bounce_type):
-    return (campaign_id or 0, source or "", bounce_type or "")
-
-
-def _invalidate_cache():
-    _FILTER_CACHE.clear()
 
 
 @router.post("/ingest")
@@ -28,7 +20,7 @@ async def ingest_bounces():
     create matching bounce records in ListMonk."""
     try:
         result = await ingest_bounce_mailbox(listmonk)
-        _invalidate_cache()
+        asyncio.create_task(update_hard_bounce_counts())  # Update cache in background
         return result
     except Exception as e:
         logger.error(f"bounce ingest failed: {e}", exc_info=True)

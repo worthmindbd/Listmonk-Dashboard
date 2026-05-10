@@ -4,6 +4,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from typing import Optional
 from app.services.listmonk_client import listmonk
 from app.services.export_service import dict_list_to_csv
+from app.services.hard_bounce_cache import get_all_hard_bounce_counts
 
 router = APIRouter()
 
@@ -19,8 +20,19 @@ def _engagement_query(campaign_id: int, engagement_type: str) -> str | None:
 async def get_campaigns(page: int = 1, per_page: int = 50,
                         query: str = "", status: str = "",
                         order_by: str = "created_at", order: str = "DESC"):
-    return await listmonk.get_campaigns(page, per_page, query, status,
-                                        order_by, order)
+    result = await listmonk.get_campaigns(page, per_page, query, status,
+                                           order_by, order)
+
+    # Replace bounce counts with hard bounce counts from cache
+    campaigns = result.get("data", {}).get("results", [])
+    if campaigns:
+        hard_counts = get_all_hard_bounce_counts()
+        for c in campaigns:
+            cid = c.get("id")
+            if cid in hard_counts:
+                c["bounces"] = hard_counts[cid]
+
+    return result
 
 
 @router.get("/running/stats")

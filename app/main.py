@@ -20,6 +20,7 @@ from app.services.campaign_scheduler import (
 from app.services.imap_unsubscribe import scan_and_unsubscribe
 from app.services.link_unsubscribe import scan_link_unsubscribes
 from app.services.bounce_ingest import ingest_bounce_mailbox
+from app.services.hard_bounce_cache import start_cache_updater, update_hard_bounce_counts
 from app.auth import verify_session, create_session, clear_session, check_credentials
 from app.routers import subscribers, lists, campaigns, templates, bounces, converter, unsubscribes
 
@@ -114,7 +115,8 @@ async def lifespan(app: FastAPI):
     _scheduler_task = asyncio.create_task(scheduler_loop(listmonk))
     _imap_scan_task = asyncio.create_task(imap_scan_loop())
     _bounce_ingest_task = asyncio.create_task(bounce_ingest_loop())
-    logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP+link scan (1h), bounce ingest (1h)")
+    asyncio.create_task(start_cache_updater())
+    logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP+link scan (1h), bounce ingest (1h), hard bounce cache (5min)")
     yield
     _auto_unblock_task.cancel()
     _scheduler_task.cancel()
