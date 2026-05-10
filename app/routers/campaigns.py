@@ -78,7 +78,14 @@ async def get_campaign_subscribers(campaign_id: int, engagement_type: str,
                                    page: int = 1, per_page: int = 50):
     """Get subscribers who viewed/clicked/bounced for a campaign."""
     if engagement_type == "bounces":
-        return await listmonk.get_bounces(page, per_page, campaign_id)
+        # Client-side filter: fetch all bounces for campaign, filter to hard only
+        all_bounces = await listmonk.paginate_all(
+            listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
+        )
+        hard_bounces = [b for b in all_bounces if b.get("type") == "hard"]
+        total = len(hard_bounces)
+        start = (page - 1) * per_page
+        return {"data": {"results": hard_bounces[start:start + per_page], "total": total}}
 
     query = _engagement_query(campaign_id, engagement_type)
     if not query:
@@ -94,14 +101,16 @@ async def export_campaign_subscribers(campaign_id: int, engagement_type: str):
         all_records = await listmonk.paginate_all(
             listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
         )
-        if not all_records:
-            raise HTTPException(status_code=404, detail="No bounce records found")
+        # Filter to hard bounces only
+        hard_records = [b for b in all_records if b.get("type") == "hard"]
+        if not hard_records:
+            raise HTTPException(status_code=404, detail="No hard bounce records found")
 
         columns = ["email", "type", "source", "created_at"]
         return StreamingResponse(
-            dict_list_to_csv(all_records, columns),
+            dict_list_to_csv(hard_records, columns),
             media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=campaign_{campaign_id}_bounced.csv"},
+            headers={"Content-Disposition": f"attachment; filename=campaign_{campaign_id}_hard_bounces.csv"},
         )
 
     query = _engagement_query(campaign_id, engagement_type)

@@ -421,7 +421,7 @@ const Templates = {
 const Bounces = {
     page: 1,
     campaignFilter: 0,
-    typeFilter: '',
+    typeFilter: 'hard',
     campaigns: [],
 
     async render() {

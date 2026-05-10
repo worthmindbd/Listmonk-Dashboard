@@ -11,6 +11,15 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _DELETE_CONCURRENCY = 10
+_FILTER_CACHE: dict[tuple, list[dict]] = {}
+
+
+def _cache_key(campaign_id, source, bounce_type):
+    return (campaign_id or 0, source or "", bounce_type or "")
+
+
+def _invalidate_cache():
+    _FILTER_CACHE.clear()
 
 
 @router.post("/ingest")
@@ -19,6 +28,7 @@ async def ingest_bounces():
     create matching bounce records in ListMonk."""
     try:
         result = await ingest_bounce_mailbox(listmonk)
+        _invalidate_cache()
         return result
     except Exception as e:
         logger.error(f"bounce ingest failed: {e}", exc_info=True)
@@ -29,7 +39,22 @@ async def ingest_bounces():
 async def get_bounces(page: int = 1, per_page: int = 50,
                       campaign_id: Optional[int] = None, source: str = "",
                       bounce_type: str = ""):
-    return await listmonk.get_bounces(page, per_page, campaign_id, source, bounce_type)
+    if not bounce_type:
+        return await listmonk.get_bounces(page, per_page, campaign_id, source)
+
+    # Client-side filter with caching
+    key = _cache_key(campaign_id, source, bounce_type)
+    if key not in _FILTER_CACHE:
+        all_bounces = await listmonk.paginate_all(
+            listmonk.get_bounces, per_page=500,
+            campaign_id=campaign_id, source=source,
+        )
+        _FILTER_CACHE[key] = [b for b in all_bounces if b.get("type") == bounce_type]
+
+    filtered = _FILTER_CACHE[key]
+    total = len(filtered)
+    start = (page - 1) * per_page
+    return {"data": {"results": filtered[start:start + per_page], "total": total}}
 
 
 @router.get("/export")
@@ -38,8 +63,11 @@ async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
     """Export all bounce records (optionally filtered) as CSV."""
     all_bounces = await listmonk.paginate_all(
         listmonk.get_bounces, per_page=500,
-        campaign_id=campaign_id, source=source, bounce_type=bounce_type,
+        campaign_id=campaign_id, source=source,
     )
+
+    if bounce_type:
+        all_bounces = [b for b in all_bounces if b.get("type") == bounce_type]
 
     if not all_bounces:
         raise HTTPException(status_code=404, detail="No bounce records found")
@@ -63,20 +91,27 @@ async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
 
 @router.delete("/{bounce_id}")
 async def delete_bounce(bounce_id: int):
+    _invalidate_cache()
     return await listmonk.delete_bounce(bounce_id)
 
 
 @router.delete("")
-async def delete_all_bounces(campaign_id: Optional[int] = None):
+async def delete_all_bounces(campaign_id: Optional[int] = None,
+                              bounce_type: str = ""):
     """Delete bounces. If campaign_id is provided, only delete bounces for
     that campaign (iterating + deleting in parallel). Otherwise delete all."""
     if not campaign_id:
+        _invalidate_cache()
         return await listmonk.delete_all_bounces()
 
-    bounce_ids = await listmonk.paginate_all(
+    all_bounces = await listmonk.paginate_all(
         listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
     )
-    bounce_ids = [b["id"] for b in bounce_ids]
+
+    if bounce_type:
+        all_bounces = [b for b in all_bounces if b.get("type") == bounce_type]
+
+    bounce_ids = [b["id"] for b in all_bounces]
 
     if not bounce_ids:
         return {"deleted": 0, "errors": 0, "campaign_id": campaign_id}
@@ -96,4 +131,5 @@ async def delete_all_bounces(campaign_id: Optional[int] = None):
                 logger.error(f"Failed to delete bounce {bid}: {exc}")
 
     await asyncio.gather(*(_delete(bid) for bid in bounce_ids))
+    _invalidate_cache()
     return {"deleted": deleted, "errors": errors, "campaign_id": campaign_id}
