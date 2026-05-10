@@ -421,8 +421,9 @@ const Templates = {
 const Bounces = {
     page: 1,
     campaignFilter: 0,
-    typeFilter: 'hard',
     campaigns: [],
+    _allBounces: [],  // Cache all bounces for client-side filtering
+    perPage: 25,
 
     async render() {
         try {
@@ -431,18 +432,24 @@ const Bounces = {
                 ? API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC')
                 : Promise.resolve(null);
 
-            let params = `page=${this.page}&per_page=25`;
-            if (this.campaignFilter) params += `&campaign_id=${this.campaignFilter}`;
-            if (this.typeFilter) params += `&bounce_type=${this.typeFilter}`;
+            // Fetch all bounces (no server-side filtering - we filter client-side)
+            const fetchBounces = this._fetchAllBounces();
 
-            const [campRes, result] = await Promise.all([
-                fetchCampaigns,
-                API.get(`/api/bounces?${params}`),
-            ]);
+            const [campRes, bounces] = await Promise.all([fetchCampaigns, fetchBounces]);
             if (campRes) this.campaigns = campRes?.data?.results || [];
-            const data = result?.data || {};
-            const bounces = data.results || [];
-            const total = data.total || 0;
+
+            // Client-side filter: only hard bounces
+            const hardBounces = bounces.filter(b => b.type === 'hard');
+
+            // Apply campaign filter if set
+            const filteredBounces = this.campaignFilter
+                ? hardBounces.filter(b => b.campaign?.id === this.campaignFilter)
+                : hardBounces;
+
+            // Paginate locally
+            const total = filteredBounces.length;
+            const start = (this.page - 1) * this.perPage;
+            const pageBounces = filteredBounces.slice(start, start + this.perPage);
 
             // Build campaign filter options
             const campOptions = this.campaigns.map(c =>
@@ -466,42 +473,65 @@ const Bounces = {
                         ${campOptions}
                     </select>
                     <span style="color:var(--text-secondary);font-size:0.9rem">
-                        ${App.formatNumber(total)} bounces
+                        ${App.formatNumber(total)} hard bounces
                         ${this.campaignFilter ? ' for ' + filterLabel : ''}
                     </span>
                     <div style="flex:1"></div>
                 </div>
                 <div class="table-wrapper"><table>
                     <thead><tr>
-                        <th>ID</th><th>Email</th><th>Campaign</th><th>Source</th><th>Date</th><th>Actions</th>
+                        <th>ID</th><th>Email</th><th>Campaign</th><th>Source</th><th>Type</th><th>Date</th><th>Actions</th>
                     </tr></thead><tbody>`;
 
-            if (!bounces.length) {
-                html += '<tr><td colspan="6"><div class="empty-state"><h3>No bounces found</h3></div></td></tr>';
+            if (!pageBounces.length) {
+                html += '<tr><td colspan="7"><div class="empty-state"><h3>No hard bounces found</h3></div></td></tr>';
             }
-            bounces.forEach(b => {
+            pageBounces.forEach(b => {
                 const campName = App.escapeHtml(b.campaign?.name || '-');
                 html += `<tr>
                     <td>${b.id}</td>
                     <td><strong>${App.escapeHtml(b.email || '-')}</strong></td>
                     <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis">${campName}</td>
                     <td>${b.source || '-'}</td>
+                    <td><span class="badge badge-${b.type === 'hard' ? 'danger' : 'warning'}">${b.type || 'unknown'}</span></td>
                     <td>${App.formatDate(b.created_at)}</td>
                     <td><button class="btn btn-sm btn-danger" onclick="Bounces.remove(${b.id})">Delete</button></td>
                 </tr>`;
             });
 
             html += '</tbody></table></div>';
-            html += App.renderPagination(this.page, total, 25, 'Bounces.goToPage');
+            html += App.renderPagination(this.page, total, this.perPage, 'Bounces.goToPage');
             App.setContent(html);
         } catch (err) {
             App.setContent(`<div class="empty-state"><h3>Failed to load bounces</h3><p>${App.escapeHtml(err.message || '')}</p></div>`);
         }
     },
 
+    async _fetchAllBounces() {
+        // Fetch all bounces in batches (ListMonk max 500 per page)
+        if (this._allBounces.length) return this._allBounces;
+
+        const all = [];
+        let page = 1;
+        let hasMore = true;
+
+        while (hasMore) {
+            const result = await API.get(`/api/bounces?page=${page}&per_page=500`);
+            const data = result?.data || {};
+            const results = data.results || [];
+            all.push(...results);
+            hasMore = results.length === 500;
+            page++;
+        }
+
+        this._allBounces = all;
+        return all;
+    },
+
     filterCampaign(val) {
         this.campaignFilter = parseInt(val) || 0;
         this.page = 1;
+        this._allBounces = [];  // Clear cache when campaign changes
         this.render();
     },
 
@@ -509,43 +539,58 @@ const Bounces = {
 
     async remove(id) {
         await API.del(`/api/bounces/${id}`);
+        this._allBounces = [];  // Clear cache after delete
         App.toast('Bounce deleted', 'success');
         this.render();
     },
 
     _campaignLabel() {
-        let label = '';
         if (this.campaignFilter) {
-            label = this.campaigns.find(c => c.id === this.campaignFilter)?.name
+            return this.campaigns.find(c => c.id === this.campaignFilter)?.name
                 || `#${this.campaignFilter}`;
-        } else {
-            label = 'All Campaigns';
         }
-        if (this.typeFilter) {
-            label += ` (${this.typeFilter} bounces only)`;
-        }
-        return label;
+        return 'All Campaigns';
     },
 
     _campaignQuery() {
         const params = [];
         if (this.campaignFilter) params.push(`campaign_id=${this.campaignFilter}`);
-        if (this.typeFilter) params.push(`bounce_type=${this.typeFilter}`);
         return params.length ? `?${params.join('&')}` : '';
     },
 
     async deleteAll() {
         const label = this.campaignFilter
-            ? `bounces for "${this._campaignLabel()}"`
-            : 'ALL bounce records';
+            ? `hard bounces for "${this._campaignLabel()}"`
+            : 'ALL hard bounce records';
         if (!await App.confirm('Delete Bounces', `This will permanently delete ${label}. Continue?`)) return;
         App.showProgress('Delete Bounces', `Deleting ${label}. Please wait...`);
         try {
-            const result = await API.del(`/api/bounces${this._campaignQuery()}`);
+            // Fetch all bounces and filter to hard bounces, then delete by ID
+            const allBounces = await this._fetchAllBounces();
+            const hardBounces = allBounces.filter(b => b.type === 'hard');
+            const filtered = this.campaignFilter
+                ? hardBounces.filter(b => b.campaign?.id === this.campaignFilter)
+                : hardBounces;
+
+            if (!filtered.length) {
+                App.showResult('Delete Bounces — Done', '<p>No hard bounces to delete.</p>');
+                return;
+            }
+
+            // Delete each hard bounce by ID
+            let deleted = 0, errors = 0;
+            for (const b of filtered) {
+                try {
+                    await API.del(`/api/bounces/${b.id}`);
+                    deleted++;
+                } catch { errors++; }
+            }
+
+            this._allBounces = [];  // Clear cache
             App.showResult('Delete Bounces — Done', `
                 <ul style="line-height:1.8">
-                    <li>Deleted: <strong>${result?.deleted || 0}</strong></li>
-                    ${result?.errors ? `<li>Errors: <strong>${result.errors}</strong></li>` : ''}
+                    <li>Deleted: <strong>${deleted}</strong></li>
+                    ${errors ? `<li>Errors: <strong>${errors}</strong></li>` : ''}
                 </ul>
             `);
             this.render();
@@ -556,17 +601,43 @@ const Bounces = {
     },
 
     async exportBounces() {
+        App.showProgress('Export Bounces', 'Fetching all bounces...');
         try {
-            const result = await API.get(`/api/bounces/export${this._campaignQuery()}`);
-            if (result.blob) {
-                const suffix = this.campaignFilter
-                    ? `_${this.campaigns.find(c => c.id === this.campaignFilter)?.name?.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) || this.campaignFilter}`
-                    : '_all';
-                API.downloadBlob(result.blob, `bounces${suffix}.csv`);
-                App.toast('Bounces exported', 'success');
+            const allBounces = await this._fetchAllBounces();
+            // Filter to hard bounces only
+            let hardBounces = allBounces.filter(b => b.type === 'hard');
+            if (this.campaignFilter) {
+                hardBounces = hardBounces.filter(b => b.campaign?.id === this.campaignFilter);
             }
-        } catch {
-            App.toast('Export failed', 'error');
+
+            if (!hardBounces.length) {
+                App.showResult('Export Bounces', '<p>No hard bounces to export.</p>');
+                return;
+            }
+
+            // Convert to CSV
+            const headers = ['id', 'email', 'campaign_id', 'campaign_name', 'type', 'source', 'created_at'];
+            const rows = hardBounces.map(b => [
+                b.id,
+                b.email || '',
+                b.campaign?.id || '',
+                b.campaign?.name || '',
+                b.type || '',
+                b.source || '',
+                b.created_at || '',
+            ]);
+            const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n');
+
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const suffix = this.campaignFilter
+                ? `_${this.campaigns.find(c => c.id === this.campaignFilter)?.name?.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) || this.campaignFilter}`
+                : '_hard';
+            API.downloadBlob({ blob }, `bounces${suffix}.csv`);
+            App.toast('Bounces exported', 'success');
+            App.closeModal();
+        } catch (err) {
+            App.showResult('Export Bounces — Failed',
+                `<p style="color:#e74c3c">${App.escapeHtml(err.message || 'Unknown error')}</p>`);
         }
     },
 
@@ -596,7 +667,10 @@ const Bounces = {
                     ${r.message ? `<li>${App.escapeHtml(r.message)}</li>` : ''}
                 </ul>
             `);
-            if (r.ingested > 0) this.render();
+            if (r.ingested > 0) {
+                this._allBounces = [];
+                this.render();
+            }
         } catch (err) {
             App.showResult('Ingest Bounces — Failed',
                 `<p style="color:#e74c3c">${App.escapeHtml(err.message || 'Unknown error')}</p>`);
