@@ -157,16 +157,17 @@ async def get_campaign(campaign_id: int):
     campaign = result.get("data", {})
     if campaign:
         cached_counts = get_all_hard_bounce_counts()
-        hard_count = cached_counts.get(campaign_id)
 
-        # Fallback: if cache is empty, fetch hard bounces directly for this campaign
-        if hard_count is None and not cached_counts:
+        # Use cache if available, otherwise fetch directly
+        if cached_counts:
+            # Cache has data - use it (get returns 0 if not in cache)
+            campaign["bounces"] = cached_counts.get(campaign_id, 0)
+        else:
+            # Cache is empty - fetch hard bounces directly for this campaign
             all_bounces = await listmonk.paginate_all(
                 listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
             )
             hard_count = sum(1 for b in all_bounces if b.get("type") == "hard")
-
-        if hard_count is not None:
             campaign["bounces"] = hard_count
 
     return result
