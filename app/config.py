@@ -1,13 +1,23 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Repo root (app/config.py -> app/ -> repo root). Used as the default location
+# for mutable JSON state files when DATA_DIR is not set (e.g. local dev).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings:
     listmonk_url: str = os.getenv("LISTMONK_URL", "http://localhost:9000")
     listmonk_user: str = os.getenv("LISTMONK_USER", "listmonk")
     listmonk_api_key: str = os.getenv("LISTMONK_API_KEY", "")
+
+    # Directory for runtime-mutable JSON files (schedule, unsubscribe log/settings).
+    # In Docker this points at a writable named volume; locally it falls back to
+    # the repo root so existing files keep working.
+    data_dir: str = os.getenv("DATA_DIR", str(_REPO_ROOT))
 
     # IMAP settings for unsubscribe monitoring
     imap_host: str = os.getenv("IMAP_HOST", "")
@@ -34,6 +44,25 @@ class Settings:
     @property
     def base_url(self) -> str:
         return self.listmonk_url.rstrip("/")
+
+    def data_path(self, filename: str) -> Path:
+        """Resolve a mutable JSON state file inside the writable data dir.
+
+        Ensures the directory exists. Migrates a pre-existing file from the
+        repo root (legacy location) into the data dir on first access so
+        existing schedules/logs are preserved after the volume switch.
+        """
+        d = Path(self.data_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        target = d / filename
+        if not target.exists():
+            legacy = _REPO_ROOT / filename
+            if legacy.exists() and legacy.resolve() != target.resolve():
+                try:
+                    target.write_bytes(legacy.read_bytes())
+                except OSError:
+                    pass
+        return target
 
 
 settings = Settings()

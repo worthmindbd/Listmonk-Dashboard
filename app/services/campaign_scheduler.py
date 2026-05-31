@@ -15,11 +15,12 @@ from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from app.config import settings
 from app.services.listmonk_client import ListMonkClient
 
 logger = logging.getLogger("campaign_scheduler")
 
-SCHEDULE_FILE = Path(__file__).resolve().parent.parent.parent / "schedule.json"
+SCHEDULE_FILE = settings.data_path("schedule.json")
 
 # Default schedule
 DEFAULT_SCHEDULE = {
@@ -50,8 +51,12 @@ def load_schedule() -> dict:
 
 def save_schedule(schedule: dict):
     """Save schedule to JSON file."""
-    with open(SCHEDULE_FILE, "w") as f:
-        json.dump(schedule, f, indent=2)
+    try:
+        with open(SCHEDULE_FILE, "w") as f:
+            json.dump(schedule, f, indent=2)
+    except OSError as e:
+        logger.error(f"Failed to save schedule to {SCHEDULE_FILE}: {e}")
+        raise
 
 
 def is_within_send_window(schedule: dict) -> bool:

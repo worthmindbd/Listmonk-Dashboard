@@ -9,8 +9,10 @@ import json
 import re
 from pathlib import Path
 
-LOG_FILE = Path(__file__).resolve().parent.parent.parent / "unsubscribe_log.json"
-SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent / "unsubscribe_settings.json"
+from app.config import settings
+
+LOG_FILE = settings.data_path("unsubscribe_log.json")
+SETTINGS_FILE = settings.data_path("unsubscribe_settings.json")
 
 _DEFAULT_SETTINGS = {
     "blocklist_enabled": False,

@@ -239,7 +239,14 @@ async def update_schedule(data: dict):
                 "end_hour", "end_minute", "days"]:
         if key in data:
             schedule[key] = data[key]
-    save_schedule(schedule)
+    try:
+        save_schedule(schedule)
+    except OSError as e:
+        logger.error(f"Could not persist schedule: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not write schedule file (check data directory permissions).",
+        )
     if data.get("enabled"):
         await run_scheduler_tick(listmonk)
     return {"status": "ok", "schedule": schedule}

@@ -7,8 +7,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN adduser --disabled-password --gecos "" appuser && chown -R appuser /app
+RUN adduser --disabled-password --gecos "" appuser \
+    && mkdir -p /data \
+    && chown -R appuser /app /data
 USER appuser
+
+ENV DATA_DIR=/data
 
 EXPOSE 8000
 
