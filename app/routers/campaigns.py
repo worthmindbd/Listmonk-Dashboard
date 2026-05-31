@@ -25,12 +25,11 @@ async def get_campaigns(page: int = 1, per_page: int = 50,
 
     # Replace bounce counts with hard bounce counts from cache
     campaigns = result.get("data", {}).get("results", [])
-    if campaigns:
-        hard_counts = get_all_hard_bounce_counts()
+    hard_counts = get_all_hard_bounce_counts()
+    if campaigns and hard_counts:
         for c in campaigns:
             cid = c.get("id")
-            if cid in hard_counts:
-                c["bounces"] = hard_counts[cid]
+            c["bounces"] = hard_counts.get(cid, 0)
 
     return result
 
@@ -75,6 +74,12 @@ async def export_all_campaigns():
     )
     if not all_campaigns:
         raise HTTPException(status_code=404, detail="No campaigns found")
+
+    hard_counts = get_all_hard_bounce_counts()
+    if hard_counts:
+        for c in all_campaigns:
+            cid = c.get("id")
+            c["bounces"] = hard_counts.get(cid, 0)
 
     columns = ["id", "name", "subject", "status", "type", "to_send", "sent",
                 "views", "clicks", "bounces", "created_at", "started_at"]

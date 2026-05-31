@@ -19,6 +19,7 @@ const API = {
             const resp = await fetch(path, opts);
             if (!resp.ok) {
                 if (resp.status === 401) {
+                    window.location.href = '/auth/login';
                     throw new Error('Unauthorized');
                 }
                 let detail = `HTTP ${resp.status}`;

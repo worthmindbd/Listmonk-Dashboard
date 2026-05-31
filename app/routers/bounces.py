@@ -34,7 +34,9 @@ async def ingest_bounces():
     create matching bounce records in ListMonk."""
     try:
         result = await ingest_bounce_mailbox(listmonk)
-        asyncio.create_task(update_hard_bounce_counts())  # Update cache in background
+        _invalidate_cache()
+        task = asyncio.create_task(update_hard_bounce_counts())
+        task.add_done_callback(lambda t: logger.error(f"hard bounce cache update failed: {t.exception()}") if t.exception() else None)
         return result
     except Exception as e:
         logger.error(f"bounce ingest failed: {e}", exc_info=True)
