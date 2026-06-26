@@ -5,6 +5,7 @@ Used at ingestion (skip false positives), display/export, and bounce counts.
 """
 
 from app.services.listmonk_client import ListMonkClient
+from app.services.opener_cache import get_opener_emails, get_opener_emails_for_campaigns
 
 
 def campaign_views_query(campaign_id: int) -> str:
@@ -27,11 +28,7 @@ async def get_campaign_opener_emails(
     client: ListMonkClient, campaign_id: int,
 ) -> set[str]:
     """Return lowercased emails of subscribers who opened the campaign."""
-    subs = await client.paginate_all(
-        client.get_subscribers, per_page=500,
-        query=campaign_views_query(campaign_id),
-    )
-    return {_normalize_email(s["email"]) for s in subs if s.get("email")}
+    return await get_opener_emails(client, campaign_id)
 
 
 async def subscriber_opened_campaign(
@@ -50,10 +47,7 @@ async def subscriber_opened_campaign(
 async def build_opener_emails_by_campaign(
     client: ListMonkClient, campaign_ids: set[int],
 ) -> dict[int, set[str]]:
-    opener_map: dict[int, set[str]] = {}
-    for cid in campaign_ids:
-        opener_map[cid] = await get_campaign_opener_emails(client, cid)
-    return opener_map
+    return await get_opener_emails_for_campaigns(client, campaign_ids)
 
 
 def exclude_openers_from_bounces(

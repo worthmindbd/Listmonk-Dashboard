@@ -422,34 +422,35 @@ const Bounces = {
     page: 1,
     campaignFilter: 0,
     campaigns: [],
-    _allBounces: [],  // Cache all bounces for client-side filtering
+    total: 0,
     perPage: 25,
+
+    _queryParams() {
+        const params = new URLSearchParams({
+            page: String(this.page),
+            per_page: String(this.perPage),
+            bounce_type: 'hard',
+        });
+        if (this.campaignFilter) params.set('campaign_id', String(this.campaignFilter));
+        return params.toString();
+    },
 
     async render() {
         try {
-            // Fetch campaigns once or when missing
             const fetchCampaigns = !this.campaigns.length
                 ? API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC')
                 : Promise.resolve(null);
 
-            // Fetch all bounces (no server-side filtering - we filter client-side)
-            const fetchBounces = this._fetchAllBounces();
-
-            const [campRes, bounces] = await Promise.all([fetchCampaigns, fetchBounces]);
+            const [campRes, bounceRes] = await Promise.all([
+                fetchCampaigns,
+                API.get(`/api/bounces?${this._queryParams()}`),
+            ]);
             if (campRes) this.campaigns = campRes?.data?.results || [];
 
-            // Client-side filter: only hard bounces
-            const hardBounces = bounces.filter(b => b.type === 'hard');
-
-            // Apply campaign filter if set
-            const filteredBounces = this.campaignFilter
-                ? hardBounces.filter(b => b.campaign?.id === this.campaignFilter)
-                : hardBounces;
-
-            // Paginate locally
-            const total = filteredBounces.length;
-            const start = (this.page - 1) * this.perPage;
-            const pageBounces = filteredBounces.slice(start, start + this.perPage);
+            const data = bounceRes?.data || {};
+            const pageBounces = data.results || [];
+            const total = data.total || 0;
+            this.total = total;
 
             // Build campaign filter options
             const campOptions = this.campaigns.map(c =>
@@ -507,31 +508,9 @@ const Bounces = {
         }
     },
 
-    async _fetchAllBounces() {
-        // Fetch hard bounces only (server-side filtering + caching)
-        if (this._allBounces.length) return this._allBounces;
-
-        const all = [];
-        let page = 1;
-        let hasMore = true;
-
-        while (hasMore) {
-            const result = await API.get(`/api/bounces?page=${page}&per_page=500&bounce_type=hard`);
-            const data = result?.data || {};
-            const results = data.results || [];
-            all.push(...results);
-            hasMore = results.length === 500 && page * 500 < data.total;
-            page++;
-        }
-
-        this._allBounces = all;
-        return all;
-    },
-
     filterCampaign(val) {
         this.campaignFilter = parseInt(val) || 0;
         this.page = 1;
-        this._allBounces = [];  // Clear cache when campaign changes
         this.render();
     },
 
@@ -539,7 +518,6 @@ const Bounces = {
 
     async remove(id) {
         await API.del(`/api/bounces/${id}`);
-        this._allBounces = [];  // Clear cache after delete
         App.toast('Bounce deleted', 'success');
         this.render();
     },
@@ -565,28 +543,11 @@ const Bounces = {
         if (!await App.confirm('Delete Bounces', `This will permanently delete ${label}. Continue?`)) return;
         App.showProgress('Delete Bounces', `Deleting ${label}. Please wait...`);
         try {
-            // Fetch all bounces and filter to hard bounces, then delete by ID
-            const allBounces = await this._fetchAllBounces();
-            const hardBounces = allBounces.filter(b => b.type === 'hard');
-            const filtered = this.campaignFilter
-                ? hardBounces.filter(b => b.campaign?.id === this.campaignFilter)
-                : hardBounces;
-
-            if (!filtered.length) {
-                App.showResult('Delete Bounces — Done', '<p>No hard bounces to delete.</p>');
-                return;
-            }
-
-            // Delete each hard bounce by ID
-            let deleted = 0, errors = 0;
-            for (const b of filtered) {
-                try {
-                    await API.del(`/api/bounces/${b.id}`);
-                    deleted++;
-                } catch { errors++; }
-            }
-
-            this._allBounces = [];  // Clear cache
+            const params = new URLSearchParams({ bounce_type: 'hard' });
+            if (this.campaignFilter) params.set('campaign_id', String(this.campaignFilter));
+            const result = await API.del(`/api/bounces?${params}`);
+            const deleted = result?.deleted ?? 0;
+            const errors = result?.errors ?? 0;
             App.showResult('Delete Bounces — Done', `
                 <ul style="line-height:1.8">
                     <li>Deleted: <strong>${deleted}</strong></li>
@@ -601,38 +562,19 @@ const Bounces = {
     },
 
     async exportBounces() {
-        App.showProgress('Export Bounces', 'Fetching all bounces...');
+        App.showProgress('Export Bounces', 'Preparing export...');
         try {
-            const allBounces = await this._fetchAllBounces();
-            // Filter to hard bounces only
-            let hardBounces = allBounces.filter(b => b.type === 'hard');
-            if (this.campaignFilter) {
-                hardBounces = hardBounces.filter(b => b.campaign?.id === this.campaignFilter);
-            }
-
-            if (!hardBounces.length) {
+            const params = new URLSearchParams({ bounce_type: 'hard' });
+            if (this.campaignFilter) params.set('campaign_id', String(this.campaignFilter));
+            const result = await API.get(`/api/bounces/export?${params}`);
+            if (!result.blob) {
                 App.showResult('Export Bounces', '<p>No hard bounces to export.</p>');
                 return;
             }
-
-            // Convert to CSV
-            const headers = ['id', 'email', 'campaign_id', 'campaign_name', 'type', 'source', 'created_at'];
-            const rows = hardBounces.map(b => [
-                b.id,
-                b.email || '',
-                b.campaign?.id || '',
-                b.campaign?.name || '',
-                b.type || '',
-                b.source || '',
-                b.created_at || '',
-            ]);
-            const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n');
-
-            const blob = new Blob([csv], { type: 'text/csv' });
             const suffix = this.campaignFilter
                 ? `_${this.campaigns.find(c => c.id === this.campaignFilter)?.name?.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) || this.campaignFilter}`
                 : '_hard';
-            API.downloadBlob({ blob }, `bounces${suffix}.csv`);
+            API.downloadBlob(result.blob, `bounces${suffix}.csv`);
             App.toast('Bounces exported', 'success');
             App.closeModal();
         } catch (err) {
@@ -668,7 +610,6 @@ const Bounces = {
                 </ul>
             `);
             if (r.ingested > 0) {
-                this._allBounces = [];
                 this.render();
             }
         } catch (err) {

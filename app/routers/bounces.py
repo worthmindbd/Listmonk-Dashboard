@@ -111,8 +111,9 @@ async def delete_bounce(bounce_id: int):
 async def delete_all_bounces(campaign_id: Optional[int] = None,
                               bounce_type: str = ""):
     """Delete bounces. If campaign_id is provided, only delete bounces for
-    that campaign (iterating + deleting in parallel). Otherwise delete all."""
-    if not campaign_id:
+    that campaign (iterating + deleting in parallel). If bounce_type is set
+    without campaign_id, delete all matching bounces. Otherwise delete all."""
+    if not campaign_id and not bounce_type:
         _invalidate_cache()
         return await listmonk.delete_all_bounces()
 

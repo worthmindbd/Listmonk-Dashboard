@@ -13,7 +13,7 @@ class ListMonkClient:
         self._client = httpx.AsyncClient(
             base_url=settings.base_url,
             auth=(settings.listmonk_user, settings.listmonk_api_key),
-            timeout=30.0,
+            timeout=120.0,
         )
 
     async def close(self):
