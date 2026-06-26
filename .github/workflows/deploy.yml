@@ -17,13 +17,17 @@ jobs:
           script: |
             set -euo pipefail
             cd /root/Listmonk-Dashboard
-            git pull origin main
+            git fetch origin main
+            git clean -fd
+            git reset --hard origin/main
             docker compose up -d --build
             sleep 5
             curl -f http://localhost:8000/auth/login || (echo "Instance 1 deploy failed!" && exit 1)
 
             cd /root/Listmonk-Dashboard-2
-            git pull origin main
+            git fetch origin main
+            git clean -fd
+            git reset --hard origin/main
             docker compose -f docker-compose.yml -f docker-compose.instance2.yml up -d --build
             sleep 5
             curl -f http://localhost:8001/auth/login || (echo "Instance 2 deploy failed!" && exit 1)
