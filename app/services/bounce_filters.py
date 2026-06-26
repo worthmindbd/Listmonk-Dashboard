@@ -6,6 +6,7 @@ Used at ingestion (skip false positives), display/export, and bounce counts.
 
 from app.services.listmonk_client import ListMonkClient
 from app.services.opener_cache import get_opener_emails, get_opener_emails_for_campaigns
+from app.services.imap_helpers import safe_email_for_query
 
 
 def campaign_views_query(campaign_id: int) -> str:
@@ -37,6 +38,22 @@ async def subscriber_opened_campaign(
     """True if the subscriber has a campaign_views row for this campaign."""
     query = (
         f"subscribers.id = {subscriber_id} "
+        f"AND subscribers.id IN (SELECT subscriber_id FROM campaign_views "
+        f"WHERE campaign_id={campaign_id})"
+    )
+    result = await client.get_subscribers(1, 1, query)
+    return result.get("data", {}).get("total", 0) > 0
+
+
+async def email_opened_campaign(
+    client: ListMonkClient, email: str, campaign_id: int,
+) -> bool:
+    """True if this email opened the campaign (single ListMonk query)."""
+    safe = safe_email_for_query(email)
+    if not safe:
+        return False
+    query = (
+        f"subscribers.email = '{safe}' "
         f"AND subscribers.id IN (SELECT subscriber_id FROM campaign_views "
         f"WHERE campaign_id={campaign_id})"
     )
@@ -83,6 +100,7 @@ async def filter_campaign_hard_bounces(
     bounces: list[dict],
 ) -> list[dict]:
     """Hard bounces for one campaign, excluding subscribers who opened it."""
+    from app.services.bounce_list import filter_bounces_excluding_openers_fast
+
     hard = [b for b in bounces if b.get("type") == "hard"]
-    openers = await get_campaign_opener_emails(client, campaign_id)
-    return exclude_openers_from_bounces(hard, {campaign_id: openers})
+    return await filter_bounces_excluding_openers_fast(client, hard)

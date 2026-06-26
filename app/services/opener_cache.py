@@ -84,3 +84,15 @@ def invalidate(campaign_id: int | None = None) -> None:
         return
     _cache.pop(campaign_id, None)
     _fetched_at.pop(campaign_id, None)
+
+
+def is_cached(campaign_id: int) -> bool:
+    if campaign_id not in _cache:
+        return False
+    return time.monotonic() - _fetched_at.get(campaign_id, 0) < TTL_SECONDS
+
+
+def get_cached_opener_emails(campaign_id: int) -> set[str] | None:
+    if is_cached(campaign_id):
+        return _cache[campaign_id]
+    return None

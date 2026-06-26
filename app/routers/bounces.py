@@ -5,26 +5,12 @@ from fastapi.responses import StreamingResponse
 from typing import Optional
 from app.services.listmonk_client import listmonk
 from app.services.bounce_ingest import ingest_bounce_mailbox
-from app.services.bounce_filters import filter_bounces_excluding_openers
+from app.services.bounce_list import fetch_all_filtered_bounces, fetch_filtered_bounces_page
 from app.services.export_service import dict_list_to_csv
 from app.services.hard_bounce_cache import update_hard_bounce_counts
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# In-memory cache for filtered bounces
-_FILTER_CACHE: dict[str, list[dict]] = {}
-
-
-def _cache_key(campaign_id: Optional[int], source: str, bounce_type: str) -> str:
-    """Generate cache key for bounce filter."""
-    return f"{campaign_id or 'all'}:{source}:{bounce_type}"
-
-
-def _invalidate_cache():
-    """Clear the bounce filter cache."""
-    global _FILTER_CACHE
-    _FILTER_CACHE.clear()
 
 _DELETE_CONCURRENCY = 10
 
@@ -35,7 +21,6 @@ async def ingest_bounces():
     create matching bounce records in ListMonk."""
     try:
         result = await ingest_bounce_mailbox(listmonk)
-        _invalidate_cache()
         task = asyncio.create_task(update_hard_bounce_counts())
         task.add_done_callback(lambda t: logger.error(f"hard bounce cache update failed: {t.exception()}") if t.exception() else None)
         return result
@@ -51,35 +36,18 @@ async def get_bounces(page: int = 1, per_page: int = 50,
     if not bounce_type:
         return await listmonk.get_bounces(page, per_page, campaign_id, source)
 
-    # Client-side filter with caching
-    key = _cache_key(campaign_id, source, bounce_type)
-    if key not in _FILTER_CACHE:
-        all_bounces = await listmonk.paginate_all(
-            listmonk.get_bounces, per_page=500,
-            campaign_id=campaign_id, source=source,
-        )
-        typed = [b for b in all_bounces if b.get("type") == bounce_type]
-        _FILTER_CACHE[key] = await filter_bounces_excluding_openers(listmonk, typed)
-
-    filtered = _FILTER_CACHE[key]
-    total = len(filtered)
-    start = (page - 1) * per_page
-    return {"data": {"results": filtered[start:start + per_page], "total": total}}
+    return await fetch_filtered_bounces_page(
+        listmonk, page, per_page, bounce_type, campaign_id, source,
+    )
 
 
 @router.get("/export")
 async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
                          bounce_type: str = ""):
     """Export all bounce records (optionally filtered) as CSV."""
-    all_bounces = await listmonk.paginate_all(
-        listmonk.get_bounces, per_page=500,
-        campaign_id=campaign_id, source=source,
+    all_bounces = await fetch_all_filtered_bounces(
+        listmonk, bounce_type, campaign_id, source,
     )
-
-    if bounce_type:
-        all_bounces = [b for b in all_bounces if b.get("type") == bounce_type]
-
-    all_bounces = await filter_bounces_excluding_openers(listmonk, all_bounces)
 
     if not all_bounces:
         raise HTTPException(status_code=404, detail="No bounce records found")
@@ -103,7 +71,6 @@ async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
 
 @router.delete("/{bounce_id}")
 async def delete_bounce(bounce_id: int):
-    _invalidate_cache()
     return await listmonk.delete_bounce(bounce_id)
 
 
@@ -114,17 +81,11 @@ async def delete_all_bounces(campaign_id: Optional[int] = None,
     that campaign (iterating + deleting in parallel). If bounce_type is set
     without campaign_id, delete all matching bounces. Otherwise delete all."""
     if not campaign_id and not bounce_type:
-        _invalidate_cache()
         return await listmonk.delete_all_bounces()
 
-    all_bounces = await listmonk.paginate_all(
-        listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
+    all_bounces = await fetch_all_filtered_bounces(
+        listmonk, bounce_type, campaign_id,
     )
-
-    if bounce_type:
-        all_bounces = [b for b in all_bounces if b.get("type") == bounce_type]
-
-    all_bounces = await filter_bounces_excluding_openers(listmonk, all_bounces)
     bounce_ids = [b["id"] for b in all_bounces]
 
     if not bounce_ids:
@@ -145,5 +106,4 @@ async def delete_all_bounces(campaign_id: Optional[int] = None,
                 logger.error(f"Failed to delete bounce {bid}: {exc}")
 
     await asyncio.gather(*(_delete(bid) for bid in bounce_ids))
-    _invalidate_cache()
     return {"deleted": deleted, "errors": errors, "campaign_id": campaign_id}
