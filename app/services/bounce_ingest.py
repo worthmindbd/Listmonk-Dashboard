@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.config import settings
+from app.services.bounce_filters import subscriber_opened_campaign
 from app.services.listmonk_client import ListMonkClient
 
 logger = logging.getLogger("bounce_ingest")
@@ -318,6 +319,20 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                     if not campaign:
                         skipped += 1
                         skipped_reasons["no_campaign"] = skipped_reasons.get("no_campaign", 0) + 1
+                        conn.store(msg_id, "+FLAGS", "\\Seen")
+                        continue
+
+                    if await subscriber_opened_campaign(
+                        client, subscriber["id"], campaign["id"],
+                    ):
+                        skipped += 1
+                        skipped_reasons["opened_campaign"] = (
+                            skipped_reasons.get("opened_campaign", 0) + 1
+                        )
+                        logger.info(
+                            f"[BounceIngest] skip {recipient}: opened campaign "
+                            f"{campaign.get('id')}"
+                        )
                         conn.store(msg_id, "+FLAGS", "\\Seen")
                         continue
 

@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from typing import Optional
 from app.services.listmonk_client import listmonk
 from app.services.bounce_ingest import ingest_bounce_mailbox
+from app.services.bounce_filters import filter_bounces_excluding_openers
 from app.services.export_service import dict_list_to_csv
 from app.services.hard_bounce_cache import update_hard_bounce_counts
 
@@ -57,7 +58,8 @@ async def get_bounces(page: int = 1, per_page: int = 50,
             listmonk.get_bounces, per_page=500,
             campaign_id=campaign_id, source=source,
         )
-        _FILTER_CACHE[key] = [b for b in all_bounces if b.get("type") == bounce_type]
+        typed = [b for b in all_bounces if b.get("type") == bounce_type]
+        _FILTER_CACHE[key] = await filter_bounces_excluding_openers(listmonk, typed)
 
     filtered = _FILTER_CACHE[key]
     total = len(filtered)
@@ -76,6 +78,8 @@ async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
 
     if bounce_type:
         all_bounces = [b for b in all_bounces if b.get("type") == bounce_type]
+
+    all_bounces = await filter_bounces_excluding_openers(listmonk, all_bounces)
 
     if not all_bounces:
         raise HTTPException(status_code=404, detail="No bounce records found")
@@ -119,6 +123,7 @@ async def delete_all_bounces(campaign_id: Optional[int] = None,
     if bounce_type:
         all_bounces = [b for b in all_bounces if b.get("type") == bounce_type]
 
+    all_bounces = await filter_bounces_excluding_openers(listmonk, all_bounces)
     bounce_ids = [b["id"] for b in all_bounces]
 
     if not bounce_ids:

@@ -1,8 +1,8 @@
 """
-Auto-unblock service: Finds subscribers who clicked links in any campaign
+Auto-unblock service: Finds subscribers who clicked links or opened campaigns
 but are currently blocklisted, and re-enables them + deletes their bounce records.
 
-Logic: If a subscriber clicked a link, they are a real engaged user.
+Logic: If a subscriber clicked or opened, they are a real engaged user.
 Being blocklisted (usually from a bounce) is a false positive.
 """
 
@@ -14,17 +14,26 @@ from app.config import settings
 
 logger = logging.getLogger("auto_unblock")
 
-QUERY_BLOCKLISTED_CLICKERS = (
+QUERY_BLOCKLISTED_ENGAGED = (
     "subscribers.status = 'blocklisted' "
-    "AND subscribers.id IN (SELECT DISTINCT subscriber_id FROM link_clicks)"
+    "AND (subscribers.id IN (SELECT DISTINCT subscriber_id FROM link_clicks) "
+    "OR subscribers.id IN (SELECT DISTINCT subscriber_id FROM campaign_views))"
 )
+
+# Backward-compatible alias
+QUERY_BLOCKLISTED_CLICKERS = QUERY_BLOCKLISTED_ENGAGED
+
+
+async def find_blocklisted_engaged(client: ListMonkClient) -> list[dict]:
+    """Find blocklisted subscribers who clicked or opened any campaign."""
+    return await client.paginate_all(
+        client.get_subscribers, per_page=500, query=QUERY_BLOCKLISTED_ENGAGED,
+    )
 
 
 async def find_blocklisted_clickers(client: ListMonkClient) -> list[dict]:
-    """Find all subscribers who clicked but are blocklisted."""
-    return await client.paginate_all(
-        client.get_subscribers, per_page=500, query=QUERY_BLOCKLISTED_CLICKERS,
-    )
+    """Backward-compatible alias for find_blocklisted_engaged."""
+    return await find_blocklisted_engaged(client)
 
 
 async def delete_bounce_records(client: ListMonkClient, emails: set[str]) -> int:
@@ -83,22 +92,22 @@ async def unblock_subscribers(client: ListMonkClient, subscribers: list[dict]) -
 
 
 async def run_auto_unblock() -> dict:
-    """Main entry point: find and unblock all blocklisted clickers.
+    """Main entry point: find and unblock all blocklisted engaged subscribers.
     Uses the singleton client when available, falls back to creating one."""
     try:
-        subs = await find_blocklisted_clickers(listmonk_singleton)
+        subs = await find_blocklisted_engaged(listmonk_singleton)
         if not subs:
-            logger.info("No blocklisted clickers found")
+            logger.info("No blocklisted engaged subscribers found")
             return {"success": 0, "failed": 0, "bounces_deleted": 0,
                     "unblocked": [], "timestamp": datetime.now(timezone.utc).isoformat()}
-        logger.info(f"Found {len(subs)} blocklisted clicker(s) to unblock")
+        logger.info(f"Found {len(subs)} blocklisted engaged subscriber(s) to unblock")
         return await unblock_subscribers(listmonk_singleton, subs)
     except RuntimeError:
         # Singleton not started (CLI usage) — create standalone client
         client = ListMonkClient()
         await client.start()
         try:
-            subs = await find_blocklisted_clickers(client)
+            subs = await find_blocklisted_engaged(client)
             if not subs:
                 return {"success": 0, "failed": 0, "bounces_deleted": 0,
                         "unblocked": [], "timestamp": datetime.now(timezone.utc).isoformat()}

@@ -4,6 +4,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from typing import Optional
 from app.services.listmonk_client import listmonk
 from app.services.export_service import dict_list_to_csv
+from app.services.bounce_filters import campaign_views_query, filter_campaign_hard_bounces
 from app.services.hard_bounce_cache import get_all_hard_bounce_counts
 
 router = APIRouter()
@@ -11,7 +12,7 @@ router = APIRouter()
 
 def _engagement_query(campaign_id: int, engagement_type: str) -> str | None:
     return {
-        "views": f"subscribers.id IN (SELECT subscriber_id FROM campaign_views WHERE campaign_id={campaign_id})",
+        "views": campaign_views_query(campaign_id),
         "clicks": f"subscribers.id IN (SELECT subscriber_id FROM link_clicks WHERE campaign_id={campaign_id})",
     }.get(engagement_type)
 
@@ -95,11 +96,12 @@ async def get_campaign_subscribers(campaign_id: int, engagement_type: str,
                                    page: int = 1, per_page: int = 50):
     """Get subscribers who viewed/clicked/bounced for a campaign."""
     if engagement_type == "bounces":
-        # Client-side filter: fetch all bounces for campaign, filter to hard only
         all_bounces = await listmonk.paginate_all(
             listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
         )
-        hard_bounces = [b for b in all_bounces if b.get("type") == "hard"]
+        hard_bounces = await filter_campaign_hard_bounces(
+            listmonk, campaign_id, all_bounces,
+        )
         total = len(hard_bounces)
         start = (page - 1) * per_page
         return {"data": {"results": hard_bounces[start:start + per_page], "total": total}}
@@ -118,8 +120,9 @@ async def export_campaign_subscribers(campaign_id: int, engagement_type: str):
         all_records = await listmonk.paginate_all(
             listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
         )
-        # Filter to hard bounces only
-        hard_records = [b for b in all_records if b.get("type") == "hard"]
+        hard_records = await filter_campaign_hard_bounces(
+            listmonk, campaign_id, all_records,
+        )
         if not hard_records:
             raise HTTPException(status_code=404, detail="No hard bounce records found")
 
@@ -168,12 +171,13 @@ async def get_campaign(campaign_id: int):
             # Cache has data - use it (get returns 0 if not in cache)
             campaign["bounces"] = cached_counts.get(campaign_id, 0)
         else:
-            # Cache is empty - fetch hard bounces directly for this campaign
             all_bounces = await listmonk.paginate_all(
                 listmonk.get_bounces, per_page=500, campaign_id=campaign_id,
             )
-            hard_count = sum(1 for b in all_bounces if b.get("type") == "hard")
-            campaign["bounces"] = hard_count
+            hard_bounces = await filter_campaign_hard_bounces(
+                listmonk, campaign_id, all_bounces,
+            )
+            campaign["bounces"] = len(hard_bounces)
 
     return result
 

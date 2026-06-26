@@ -219,7 +219,7 @@ const Settings = {
     // ── Auto-Unblock Tab ─────────────────────────────────
     renderAutoUnblock() {
         const u = this.unblockStatus || {};
-        const count = u.blocklisted_clickers || 0;
+        const count = u.blocklisted_engaged ?? u.blocklisted_clickers ?? 0;
         const interval = u.interval_hours || 6;
 
         return `
@@ -228,13 +228,13 @@ const Settings = {
                     <h3 class="card-title">Auto-Unblock Status</h3>
                     <div class="action-btns">
                         ${count > 0
-                            ? `<span class="badge badge-warning" style="font-size:0.9rem;padding:6px 14px">${count} blocklisted clicker(s) found</span>`
+                            ? `<span class="badge badge-warning" style="font-size:0.9rem;padding:6px 14px">${count} blocklisted engaged subscriber(s) found</span>`
                             : '<span class="badge badge-success" style="font-size:0.9rem;padding:6px 14px">All clear</span>'}
                     </div>
                 </div>
                 <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
                     <div>
-                        <span style="color:var(--text-muted);font-size:0.85rem">Blocklisted clickers:</span>
+                        <span style="color:var(--text-muted);font-size:0.85rem">Blocklisted engaged:</span>
                         <strong style="color:${count > 0 ? 'var(--warning)' : 'var(--success)'}">${count}</strong>
                     </div>
                     <div>
@@ -247,7 +247,7 @@ const Settings = {
             <div class="card" style="margin-bottom:20px">
                 <div class="card-header"><h3 class="card-title">Manual Unblock</h3></div>
                 <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:16px">
-                    Click the button below to scan for subscribers who clicked links in campaigns but got blocklisted due to bounces.
+                    Click the button below to scan for subscribers who opened or clicked campaigns but got blocklisted due to bounces.
                     They will be re-enabled and their bounce records will be deleted.
                 </p>
                 <button class="btn btn-primary" id="runUnblockBtn" onclick="Settings.runUnblock()">
@@ -261,11 +261,11 @@ const Settings = {
                 <div style="font-size:0.85rem;color:var(--text-secondary);line-height:1.8">
                     <p><strong>Every ${interval} hours</strong>, the system automatically:</p>
                     <ul style="padding-left:20px;margin:8px 0">
-                        <li>Finds subscribers who <strong>clicked links</strong> in any campaign but are <strong>blocklisted</strong></li>
+                        <li>Finds subscribers who <strong>opened or clicked</strong> any campaign but are <strong>blocklisted</strong></li>
                         <li><strong>Re-enables</strong> them (removes blocklist status)</li>
                         <li><strong>Deletes</strong> their bounce records (since they clearly received the email)</li>
                     </ul>
-                    <p>This protects real subscribers who get falsely bounced by corporate email security scanners that pre-scan links.</p>
+                    <p>This protects real subscribers who get falsely bounced — e.g. security scanners that pre-scan links, or delayed bounce DSNs after the recipient already opened the email.</p>
                 </div>
             </div>
         `;
@@ -352,7 +352,7 @@ const Settings = {
             if (result.error) {
                 resultEl.innerHTML = `<div class="badge badge-danger" style="padding:8px 14px">${result.error}</div>`;
             } else if (result.success === 0 && result.failed === 0) {
-                resultEl.innerHTML = '<div class="badge badge-success" style="padding:8px 14px">No blocklisted clickers found - all clear!</div>';
+                resultEl.innerHTML = '<div class="badge badge-success" style="padding:8px 14px">No blocklisted engaged subscribers found - all clear!</div>';
             } else {
                 let html = `<div class="badge badge-success" style="padding:8px 14px">${result.success} unblocked, ${result.failed} failed</div>`;
                 if (result.unblocked?.length) {

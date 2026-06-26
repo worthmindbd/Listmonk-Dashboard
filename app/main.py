@@ -12,7 +12,11 @@ from jinja2 import Environment, FileSystemLoader
 import httpx
 
 from app.services.listmonk_client import listmonk
-from app.services.auto_unblock import find_blocklisted_clickers, unblock_subscribers, QUERY_BLOCKLISTED_CLICKERS
+from app.services.auto_unblock import (
+    find_blocklisted_engaged,
+    unblock_subscribers,
+    QUERY_BLOCKLISTED_ENGAGED,
+)
 from app.services.campaign_scheduler import (
     load_schedule, save_schedule, is_within_send_window,
     scheduler_loop, run_scheduler_tick,
@@ -66,7 +70,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 async def auto_unblock_loop():
     while True:
         try:
-            subs = await find_blocklisted_clickers(listmonk)
+            subs = await find_blocklisted_engaged(listmonk)
             if subs:
                 result = await unblock_subscribers(listmonk, subs)
                 logger.info(f"Auto-unblock: {result['success']} unblocked, {result['failed']} failed")
@@ -199,9 +203,13 @@ async def index(request: Request):
 @app.get("/api/auto-unblock/status")
 async def auto_unblock_status():
     try:
-        result = await listmonk.get_subscribers(1, 1, QUERY_BLOCKLISTED_CLICKERS)
+        result = await listmonk.get_subscribers(1, 1, QUERY_BLOCKLISTED_ENGAGED)
         total = result.get("data", {}).get("total", 0)
-        return {"blocklisted_clickers": total, "interval_hours": AUTO_UNBLOCK_INTERVAL // 3600}
+        return {
+            "blocklisted_engaged": total,
+            "blocklisted_clickers": total,
+            "interval_hours": AUTO_UNBLOCK_INTERVAL // 3600,
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -209,9 +217,9 @@ async def auto_unblock_status():
 @app.post("/api/auto-unblock/run")
 async def auto_unblock_run_now():
     try:
-        subs = await find_blocklisted_clickers(listmonk)
+        subs = await find_blocklisted_engaged(listmonk)
         if not subs:
-            return {"success": 0, "failed": 0, "unblocked": [], "message": "No blocklisted clickers found"}
+            return {"success": 0, "failed": 0, "unblocked": [], "message": "No blocklisted engaged subscribers found"}
         return await unblock_subscribers(listmonk, subs)
     except Exception as e:
         return {"error": str(e)}

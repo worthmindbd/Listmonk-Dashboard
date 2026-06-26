@@ -6,6 +6,7 @@ Updated periodically in background to avoid slow on-demand fetching.
 import asyncio
 import logging
 from app.services.listmonk_client import listmonk
+from app.services.bounce_filters import filter_bounces_excluding_openers
 
 logger = logging.getLogger("hard_bounce_cache")
 
@@ -32,13 +33,14 @@ async def update_hard_bounce_counts():
         all_bounces = await listmonk.paginate_all(
             listmonk.get_bounces, per_page=BATCH_SIZE,
         )
+        hard_bounces = [b for b in all_bounces if b.get("type") == "hard"]
+        hard_bounces = await filter_bounces_excluding_openers(listmonk, hard_bounces)
 
         counts: dict[int, int] = {}
-        for b in all_bounces:
-            if b.get("type") == "hard":
-                cid = b.get("campaign", {}).get("id")
-                if cid:
-                    counts[cid] = counts.get(cid, 0) + 1
+        for b in hard_bounces:
+            cid = b.get("campaign", {}).get("id")
+            if cid:
+                counts[cid] = counts.get(cid, 0) + 1
 
         _hard_bounce_counts = counts
         _last_updated = datetime.now().isoformat()
