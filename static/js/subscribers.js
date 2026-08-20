@@ -29,7 +29,7 @@ const Subscribers = {
                 </div>
                 <div class="table-wrapper"><table>
                     <thead><tr>
-                        <th>ID</th><th>Email</th><th>Name</th><th>Status</th><th>Lists</th><th>Created</th><th>Actions</th>
+                        <th>ID</th><th>Email</th><th>Name</th><th>Status</th><th>Lists</th><th>Created</th><th class="cell-actions">Actions</th>
                     </tr></thead><tbody>`;
 
             if (!subscribers.length) {
@@ -45,9 +45,11 @@ const Subscribers = {
                     <td>${App.statusBadge(s.status)}</td>
                     <td>${lists}</td>
                     <td>${App.formatDate(s.created_at)}</td>
-                    <td class="action-btns">
-                        <button class="btn btn-sm" onclick="Subscribers.showEdit(${s.id})">Edit</button>
-                        <button class="btn btn-sm btn-danger" onclick="Subscribers.remove(${s.id})">Delete</button>
+                    <td class="cell-actions">
+                        <div class="action-btns">
+                            <button class="btn btn-sm" onclick="Subscribers.showEdit(${s.id})">Edit</button>
+                            <button class="btn btn-sm btn-danger" onclick="Subscribers.remove(${s.id})">Delete</button>
+                        </div>
                     </td>
                 </tr>`;
             });

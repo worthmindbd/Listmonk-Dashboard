@@ -28,7 +28,7 @@ const Lists = {
                 </div>
                 <div class="table-wrapper"><table>
                     <thead><tr>
-                        <th>ID</th><th>Name</th><th>Type</th><th>Optin</th><th>Subscribers</th><th>Status</th><th>Created</th><th>Actions</th>
+                        <th>ID</th><th>Name</th><th>Type</th><th>Optin</th><th>Subscribers</th><th>Status</th><th>Created</th><th class="cell-actions">Actions</th>
                     </tr></thead><tbody>`;
 
             if (!lists.length) {
@@ -45,9 +45,11 @@ const Lists = {
                     <td>${App.formatNumber(l.subscriber_count || 0)}</td>
                     <td>${App.statusBadge(l.status || 'active')}</td>
                     <td>${App.formatDate(l.created_at)}</td>
-                    <td class="action-btns">
-                        <button class="btn btn-sm" onclick="Lists.showEdit(${l.id})">Edit</button>
-                        <button class="btn btn-sm btn-danger" onclick="Lists.remove(${l.id})">Delete</button>
+                    <td class="cell-actions">
+                        <div class="action-btns">
+                            <button class="btn btn-sm" onclick="Lists.showEdit(${l.id})">Edit</button>
+                            <button class="btn btn-sm btn-danger" onclick="Lists.remove(${l.id})">Delete</button>
+                        </div>
                     </td>
                 </tr>`;
             });

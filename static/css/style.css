@@ -687,6 +687,7 @@ td strong,
 /* ── Tables & Data Surfaces (from DESIGN.md) ───────────────── */
 .table-wrapper {
     overflow-x: auto;
+    width: 100%;
     background: var(--bg-surface);
     backdrop-filter: blur(20px) saturate(180%);
     -webkit-backdrop-filter: blur(20px) saturate(180%);
@@ -697,8 +698,8 @@ td strong,
 
 table {
     width: 100%;
-    border-collapse: separate;
-    border-spacing: 0;
+    min-width: 100%;
+    border-collapse: collapse;
     font-size: 0.88rem;
 }
 
@@ -716,21 +717,55 @@ th {
     letter-spacing: 0.06em;
     border-bottom: 1px solid var(--glass-border);
     white-space: nowrap;
+    background: var(--bg-surface-elevated);
 }
 
 td {
     padding: 14px 18px;
     border-bottom: 1px solid var(--glass-border);
     color: var(--text-primary);
+    vertical-align: middle;
     transition: background 0.15s ease;
 }
 
-tr:last-child td {
-    border-bottom: none;
+tbody tr {
+    transition: background 0.15s ease;
+}
+
+tbody tr:hover {
+    background: var(--bg-surface-hover);
 }
 
 tbody tr:hover td {
     background: var(--bg-surface-hover);
+}
+
+tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.cell-actions {
+    white-space: nowrap;
+    width: 1%;
+    text-align: right;
+}
+
+th.cell-actions {
+    text-align: right;
+}
+
+td.cell-actions {
+    text-align: right;
+}
+
+td.cell-actions .action-btns,
+td .action-btns {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: nowrap;
+    vertical-align: middle;
 }
 
 /* ── Buttons (Pill geometry from DESIGN.md) ─────────────────── */
@@ -1135,10 +1170,16 @@ select option {
 }
 
 .action-btns {
-    display: flex;
+    display: inline-flex;
     gap: 6px;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    vertical-align: middle;
+}
+
+td.action-btns,
+td .action-btns {
+    white-space: nowrap;
 }
 
 /* ── Unsubscribes & IMAP Monitor ───────────────────────────── */

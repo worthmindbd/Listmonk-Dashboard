@@ -298,7 +298,7 @@ const Templates = {
                 </div>
                 <div class="table-wrapper"><table>
                     <thead><tr>
-                        <th>ID</th><th>Name</th><th>Type</th><th>Default</th><th>Created</th><th>Updated</th><th>Actions</th>
+                        <th>ID</th><th>Name</th><th>Type</th><th>Default</th><th>Created</th><th>Updated</th><th class="cell-actions">Actions</th>
                     </tr></thead><tbody>`;
 
             if (!templates.length) {
@@ -313,11 +313,13 @@ const Templates = {
                     <td>${t.is_default ? '<span class="badge badge-success">Default</span>' : '-'}</td>
                     <td>${App.formatDate(t.created_at)}</td>
                     <td>${App.formatDate(t.updated_at)}</td>
-                    <td class="action-btns">
-                        <button class="btn btn-sm" onclick="Templates.preview(${t.id})">Preview</button>
-                        <button class="btn btn-sm" onclick="Templates.showEdit(${t.id})">Edit</button>
-                        ${!t.is_default ? `<button class="btn btn-sm" onclick="Templates.setDefault(${t.id})">Set Default</button>` : ''}
-                        <button class="btn btn-sm btn-danger" onclick="Templates.remove(${t.id})">Delete</button>
+                    <td class="cell-actions">
+                        <div class="action-btns">
+                            <button class="btn btn-sm" onclick="Templates.preview(${t.id})">Preview</button>
+                            <button class="btn btn-sm" onclick="Templates.showEdit(${t.id})">Edit</button>
+                            ${!t.is_default ? `<button class="btn btn-sm" onclick="Templates.setDefault(${t.id})">Set Default</button>` : ''}
+                            <button class="btn btn-sm btn-danger" onclick="Templates.remove(${t.id})">Delete</button>
+                        </div>
                     </td>
                 </tr>`;
             });
@@ -481,7 +483,7 @@ const Bounces = {
                 </div>
                 <div class="table-wrapper"><table>
                     <thead><tr>
-                        <th>ID</th><th>Email</th><th>Campaign</th><th>Source</th><th>Type</th><th>Date</th><th>Actions</th>
+                        <th>ID</th><th>Email</th><th>Campaign</th><th>Source</th><th>Type</th><th>Date</th><th class="cell-actions">Actions</th>
                     </tr></thead><tbody>`;
 
             if (!pageBounces.length) {
@@ -496,7 +498,7 @@ const Bounces = {
                     <td>${b.source || '-'}</td>
                     <td><span class="badge badge-${b.type === 'hard' ? 'danger' : 'warning'}">${b.type || 'unknown'}</span></td>
                     <td>${App.formatDate(b.created_at)}</td>
-                    <td><button class="btn btn-sm btn-danger" onclick="Bounces.remove(${b.id})">Delete</button></td>
+                    <td class="cell-actions"><button class="btn btn-sm btn-danger" onclick="Bounces.remove(${b.id})">Delete</button></td>
                 </tr>`;
             });
 

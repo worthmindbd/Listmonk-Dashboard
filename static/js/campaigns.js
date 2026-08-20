@@ -44,7 +44,7 @@ const Campaigns = {
                 </div>
                 <div class="table-wrapper"><table>
                     <thead><tr>
-                        <th>ID</th><th>Name</th><th>Subject</th><th>Status</th><th>Lists</th><th>Sent</th><th>Created</th><th>Actions</th>
+                        <th>ID</th><th>Name</th><th>Subject</th><th>Status</th><th>Lists</th><th>Sent</th><th>Created</th><th class="cell-actions">Actions</th>
                     </tr></thead><tbody>`;
 
             if (!campaigns.length) {
@@ -62,12 +62,14 @@ const Campaigns = {
                     <td>${listNames}</td>
                     <td>${App.formatNumber(sent)}</td>
                     <td>${App.formatDate(c.created_at)}</td>
-                    <td class="action-btns">
-                        <button class="btn btn-sm" onclick="Campaigns.showDetail(${c.id})">View</button>
-                        ${c.status === 'draft' ? `<button class="btn btn-sm btn-primary" onclick="Campaigns.changeStatus(${c.id},'running')">Start</button>` : ''}
-                        ${c.status === 'running' ? `<button class="btn btn-sm" style="border-color:var(--warning);color:var(--warning)" onclick="Campaigns.changeStatus(${c.id},'paused')">Pause</button>` : ''}
-                        ${c.status === 'paused' ? `<button class="btn btn-sm btn-primary" onclick="Campaigns.changeStatus(${c.id},'running')">Resume</button>` : ''}
-                        <button class="btn btn-sm btn-danger" onclick="Campaigns.remove(${c.id})">Delete</button>
+                    <td class="cell-actions">
+                        <div class="action-btns">
+                            <button class="btn btn-sm" onclick="Campaigns.showDetail(${c.id})">View</button>
+                            ${c.status === 'draft' ? `<button class="btn btn-sm btn-primary" onclick="Campaigns.changeStatus(${c.id},'running')">Start</button>` : ''}
+                            ${c.status === 'running' ? `<button class="btn btn-sm" style="border-color:var(--warning);color:var(--warning)" onclick="Campaigns.changeStatus(${c.id},'paused')">Pause</button>` : ''}
+                            ${c.status === 'paused' ? `<button class="btn btn-sm btn-primary" onclick="Campaigns.changeStatus(${c.id},'running')">Resume</button>` : ''}
+                            <button class="btn btn-sm btn-danger" onclick="Campaigns.remove(${c.id})">Delete</button>
+                        </div>
                     </td>
                 </tr>`;
             });
