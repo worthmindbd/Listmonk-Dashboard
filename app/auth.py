@@ -11,7 +11,6 @@ import secrets
 import time
 from pathlib import Path
 from fastapi import Request, Response
-from app.config import settings
 
 logger = logging.getLogger("auth")
 

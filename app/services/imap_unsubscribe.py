@@ -297,10 +297,10 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     page=1, per_page=100, order_by="created_at", order="DESC"
                 )
                 campaigns_list = camp_result.get("data", {}).get("results", [])
-                print(f"[IMAP] Fetched {len(campaigns_list)} campaigns for matching")
+                logger.info(f"[IMAP] Fetched {len(campaigns_list)} campaigns for matching")
             except Exception as e:
                 logger.error(f"Failed to fetch campaigns: {e}")
-                print(f"[IMAP] ERROR fetching campaigns: {e}")
+                logger.error(f"[IMAP] ERROR fetching campaigns: {e}")
                 campaigns_list = []
 
             # Backfill: re-attribute any pre-fix email records once, so the
@@ -317,14 +317,14 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                         existing_log = [r for r in existing_log if not r.get("_remove")]
                         save_log(existing_log)
                         if changed:
-                            print(f"[IMAP] Re-attributed {changed} existing records")
+                            logger.info(f"[IMAP] Re-attributed {changed} existing records")
                             logger.info(f"Backfill: re-attributed {changed} existing records")
                         if removed:
-                            print(f"[IMAP] Removed {removed} unattributable records")
+                            logger.info(f"[IMAP] Removed {removed} unattributable records")
                             logger.info(f"Backfill: removed {removed} unattributable records")
                 except Exception as e:
                     logger.error(f"Backfill reattribution failed: {e}")
-                    print(f"[IMAP] Backfill error (non-fatal): {e}")
+                    logger.warning(f"[IMAP] Backfill error (non-fatal): {e}")
 
             # Prune records whose campaign no longer exists in ListMonk.
             if campaigns_list:
@@ -335,11 +335,11 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     if removed_count:
                         existing_log = pruned
                         save_log(existing_log)
-                        print(f"[IMAP] Pruned {removed_count} records for deleted campaigns")
+                        logger.info(f"[IMAP] Pruned {removed_count} records for deleted campaigns")
                         logger.info(f"Pruned {removed_count} records for deleted campaigns")
                 except Exception as e:
                     logger.error(f"Campaign prune failed: {e}")
-                    print(f"[IMAP] Prune error (non-fatal): {e}")
+                    logger.warning(f"[IMAP] Prune error (non-fatal): {e}")
 
             # Determine the latest campaign's creation date to filter emails
             latest_campaign_date = None
@@ -360,13 +360,13 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                 since_date = latest_campaign_date.replace(day=1)
                 since_str = imap_date(since_date)
                 status, msg_ids = conn.search(None, f'(SINCE {since_str})')
-                print(f"[IMAP] Searching emails SINCE {since_str} (campaign month)")
+                logger.info(f"[IMAP] Searching emails SINCE {since_str} (campaign month)")
             else:
                 # Fallback: scan last 30 days if no campaigns found
                 since_date = datetime.now(timezone.utc) - timedelta(days=30)
                 since_str = imap_date(since_date)
                 status, msg_ids = conn.search(None, f'(SINCE {since_str})')
-                print(f"[IMAP] No campaigns found, searching emails SINCE {since_str}")
+                logger.warning(f"[IMAP] No campaigns found, searching emails SINCE {since_str}")
 
             if status != "OK" or not msg_ids[0]:
                 conn.logout()
@@ -375,7 +375,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
 
             ids = msg_ids[0].split()
             scanned = len(ids)
-            print(f"[IMAP] Found {scanned} emails in campaign period, scanning all")
+            logger.info(f"[IMAP] Found {scanned} emails in campaign period, scanning all")
             logger.info(f"IMAP scan: {scanned} emails in campaign period")
 
             # Deduplicate using Message-ID header and sender email (reuse existing_log)
@@ -409,7 +409,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     if not keyword_match:
                         # Log if the full body HAD keywords but reply didn't
                         if KEYWORD_PATTERN.search(body):
-                            print(f"[IMAP] FILTERED OUT: {sender_email_preview} "
+                            logger.warning(f"[IMAP] FILTERED OUT: {sender_email_preview} "
                                   f"('{subject_preview}') — keyword only in "
                                   f"quoted/template content, not in actual reply")
                         continue
@@ -426,7 +426,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
 
                     matched_keyword = keyword_match.group(0).lower()
                     subject = msg.get("Subject", "(no subject)")
-                    print(f"[IMAP] Keyword match: {sender_email} ('{matched_keyword}')")
+                    logger.info(f"[IMAP] Keyword match: {sender_email} ('{matched_keyword}')")
                     logger.info(f"Unsubscribe match: {sender_email} (keyword: '{matched_keyword}')")
 
                     # Parse email date for campaign matching
@@ -467,7 +467,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                             campaigns_list, email_date, set(sub_lists)
                         )
                         if not campaign:
-                            print(f"[IMAP] No list-matched campaign for {sender_email}, skipping")
+                            logger.info(f"[IMAP] No list-matched campaign for {sender_email}, skipping")
                             logger.info(f"No list-matched campaign for '{subject}' from {sender_email}; skipping")
                             continue
 
@@ -484,7 +484,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                         scan_settings = load_settings()
                         if scan_settings.get("blocklist_enabled", False):
                             await client.blocklist_subscriber(sub_id)
-                            print(f"[IMAP] Blocklisted: {sender_email}")
+                            logger.info(f"[IMAP] Blocklisted: {sender_email}")
 
                         record = {
                             "email": sender_email,
@@ -543,11 +543,22 @@ def get_stats() -> dict:
     records = load_log()
     total = len(records)
 
-    today = datetime.now(timezone.utc).date().isoformat()
-    today_count = sum(1 for r in records if r.get("timestamp", "").startswith(today))
+    now = datetime.now(timezone.utc)
+    today_str = now.date().isoformat()
+    week_ago = now - timedelta(days=7)
 
-    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    week_count = sum(1 for r in records if r.get("timestamp", "") >= week_ago)
+    today_count = 0
+    week_count = 0
+    for r in records:
+        ts = r.get("timestamp", "")
+        if ts.startswith(today_str):
+            today_count += 1
+        try:
+            dt = datetime.fromisoformat(ts)
+        except (ValueError, TypeError):
+            continue
+        if dt >= week_ago:
+            week_count += 1
 
     # Source breakdown — records without 'source' are treated as 'email'
     link_count = sum(1 for r in records if r.get("source") == "link")

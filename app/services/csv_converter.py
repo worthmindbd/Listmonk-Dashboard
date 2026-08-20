@@ -15,6 +15,20 @@ from typing import Optional
 ENCODINGS = ["utf-8-sig", "utf-8", "latin-1", "cp1252"]
 
 
+def _count_csv_rows(text: str, dialect) -> int:
+    """Count data rows in a CSV string, handling embedded newlines in quoted fields."""
+    try:
+        reader = csv.reader(io.StringIO(text), dialect=dialect)
+        # Skip header row if the CSV has column names
+        header = next(reader, None)
+        if header is None:
+            return 0
+        return sum(1 for _ in reader)
+    except Exception:
+        # Fallback for malformed content
+        return max(0, len(text.splitlines()) - 1)
+
+
 def detect_encoding(file_bytes: bytes) -> str:
     """Try multiple encodings until one works for the entire content."""
     for enc in ENCODINGS:
@@ -61,7 +75,7 @@ def detect_columns(file_bytes: bytes) -> dict:
         "columns": columns,
         "sample_rows": sample_rows,
         "encoding": encoding,
-        "row_count_estimate": sum(1 for _ in text.splitlines()) - 1,
+        "row_count_estimate": _count_csv_rows(text, dialect),
     }
 
 

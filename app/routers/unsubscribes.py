@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+import logging
 from app.services.imap_unsubscribe import (
     get_stats, check_imap_status, scan_and_unsubscribe,
 )
@@ -199,8 +200,8 @@ async def clear_unsubscribes():
 async def reset_all_unsubscribes():
     """
     UNDO all unsubscribe actions: re-subscribe users to their original lists,
-    remove blocklist status, and clear the unsubscribe log.
-    Use this to start fresh before re-scanning.
+    remove blocklist status, and remove restored records from the log.
+    Failed records remain in the log so they can be retried.
     """
     records = load_log()
     if not records:
@@ -254,20 +255,20 @@ async def reset_all_unsubscribes():
 
             restored += 1
             details.append(f"OK {email_addr}: enabled + re-added to lists {lists_removed}")
-            print(f"[RESET] Restored: {email_addr} (lists: {lists_removed})")
+            logging.getLogger("unsubscribes").info(f"Restored: {email_addr} (lists: {lists_removed})")
 
         except Exception as e:
             failed += 1
             failed_records.append(r)
             details.append(f"FAIL {email_addr}: {e}")
-            print(f"[RESET] Failed: {email_addr}: {e}")
+            logging.getLogger("unsubscribes").error(f"Reset failed: {email_addr}: {e}")
 
     # Only clear records that were successfully restored;
     # failed records stay in the log for retry.
     save_log(failed_records)
 
     return {
-        "message": f"Reset complete: {restored} restored, {failed} failed",
+        "message": f"Reset complete: {restored} restored, {failed} failed (kept in log for retry)",
         "restored": restored,
         "failed": failed,
         "details": details,

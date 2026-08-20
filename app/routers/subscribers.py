@@ -60,11 +60,6 @@ async def create_subscriber(data: dict):
     return await listmonk.create_subscriber(data)
 
 
-@router.post("/import")
-async def import_subscribers(file: bytes, params: dict):
-    return await listmonk.import_subscribers(file, "import.csv", params)
-
-
 @router.put("/lists")
 async def modify_list_memberships(data: dict):
     return await listmonk.modify_list_memberships(data)

@@ -3,7 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware

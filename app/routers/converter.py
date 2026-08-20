@@ -33,7 +33,10 @@ async def convert_csv_file(
 
     attrs = []
     if attribute_columns:
-        attrs = json.loads(attribute_columns)
+        try:
+            attrs = json.loads(attribute_columns)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON in attribute_columns")
 
     result = convert_csv(content, email_column, name_column, attrs)
 
@@ -66,7 +69,10 @@ async def convert_and_import(
 
     attrs = []
     if attribute_columns:
-        attrs = json.loads(attribute_columns)
+        try:
+            attrs = json.loads(attribute_columns)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON in attribute_columns")
 
     result = convert_csv(content, email_column, name_column, attrs)
 
@@ -74,7 +80,10 @@ async def convert_and_import(
         raise HTTPException(status_code=400, detail=result["stats"]["error"])
 
     # Import to ListMonk
-    parsed_list_ids = json.loads(list_ids)
+    try:
+        parsed_list_ids = json.loads(list_ids)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON in list_ids")
     import_params = {
         "mode": mode,
         "delim": ",",

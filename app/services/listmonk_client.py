@@ -54,7 +54,8 @@ class ListMonkClient:
             if not results:
                 break
             all_items.extend(results)
-            if page * per_page >= data.get("total", 0):
+            total = data.get("total")
+            if isinstance(total, (int, float)) and page * per_page >= total:
                 break
             page += 1
         return all_items
@@ -278,7 +279,7 @@ class ListMonkClient:
             return {"ok": True}
 
     async def delete_all_bounces(self) -> dict:
-        return await self._request("DELETE", "/api/bounces", params={"all": "true"})
+        return await self._request("DELETE", "/api/bounces", params={"all": True})
 
     # ── Import ───────────────────────────────────────────────
 
