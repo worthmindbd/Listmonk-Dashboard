@@ -195,12 +195,23 @@ const Analytics = {
         if (this.selectedCampaignId) {
             this.loadCampaignAnalytics();
         }
+    },    getThemeColors() {
+        const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+        return {
+            isDark,
+            textColor: isDark ? '#94a3b8' : '#64748d',
+            gridColor: isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(0, 55, 112, 0.06)',
+            tooltipBg: isDark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.95)',
+            tooltipText: isDark ? '#f8fafc' : '#0d253d',
+            tooltipBorder: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(227, 232, 238, 0.9)',
+        };
     },
 
     renderComparisonChart() {
         const ctx = document.getElementById('comparisonChart');
         if (!ctx || !this.campaigns.length) return;
 
+        const theme = this.getThemeColors();
         const sorted = [...this.campaigns].reverse();
         const labels = sorted.map(c => c.name?.substring(0, 25) || 'Untitled');
 
@@ -210,19 +221,46 @@ const Analytics = {
             data: {
                 labels,
                 datasets: [
-                    { label: 'Sent', data: sorted.map(c => c.sent || 0), backgroundColor: 'rgba(99, 102, 241, 0.7)', borderRadius: 4 },
-                    { label: 'Views', data: sorted.map(c => c.views || 0), backgroundColor: 'rgba(34, 197, 94, 0.7)', borderRadius: 4 },
-                    { label: 'Clicks', data: sorted.map(c => c.clicks || 0), backgroundColor: 'rgba(245, 158, 11, 0.7)', borderRadius: 4 },
-                    { label: 'Bounces', data: sorted.map(c => c.bounces || 0), backgroundColor: 'rgba(239, 68, 68, 0.7)', borderRadius: 4 },
+                    { label: 'Sent', data: sorted.map(c => c.sent || 0), backgroundColor: 'rgba(83, 58, 253, 0.82)', borderRadius: 6 },
+                    { label: 'Views', data: sorted.map(c => c.views || 0), backgroundColor: 'rgba(16, 185, 129, 0.82)', borderRadius: 6 },
+                    { label: 'Clicks', data: sorted.map(c => c.clicks || 0), backgroundColor: 'rgba(245, 158, 11, 0.82)', borderRadius: 6 },
+                    { label: 'Bounces', data: sorted.map(c => c.bounces || 0), backgroundColor: 'rgba(234, 34, 97, 0.82)', borderRadius: 6 },
                 ],
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { labels: { color: '#8b8fa3' } } },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: theme.textColor,
+                            font: { family: 'Plus Jakarta Sans', weight: 500, size: 12 },
+                            usePointStyle: true,
+                            pointStyle: 'circle',
+                            padding: 16,
+                        },
+                    },
+                    tooltip: {
+                        backgroundColor: theme.tooltipBg,
+                        titleColor: theme.tooltipText,
+                        bodyColor: theme.tooltipText,
+                        borderColor: theme.tooltipBorder,
+                        borderWidth: 1,
+                        padding: 12,
+                        cornerRadius: 10,
+                        bodyFont: { family: 'Plus Jakarta Sans' },
+                    },
+                },
                 scales: {
-                    x: { ticks: { color: '#8b8fa3', maxRotation: 45 }, grid: { color: '#2a2e3f' } },
-                    y: { ticks: { color: '#8b8fa3' }, grid: { color: '#2a2e3f' }, beginAtZero: true },
+                    x: {
+                        ticks: { color: theme.textColor, maxRotation: 45, font: { family: 'Plus Jakarta Sans', size: 11 } },
+                        grid: { color: theme.gridColor, drawBorder: false },
+                    },
+                    y: {
+                        ticks: { color: theme.textColor, font: { family: 'Plus Jakarta Sans', size: 11 } },
+                        grid: { color: theme.gridColor, drawBorder: false },
+                        beginAtZero: true,
+                    },
                 },
             },
         });
@@ -276,9 +314,9 @@ const Analytics = {
         const bouncesData = bouncesRes.status === 'fulfilled' ? (bouncesRes.value?.data || []) : [];
         const linksData = linksRes.status === 'fulfilled' ? (linksRes.value?.data || []) : [];
 
-        this.renderTimeChart('viewsChart', 'views', viewsData, '#22c55e', 'rgba(34,197,94,0.1)');
-        this.renderTimeChart('clicksChart', 'clicks', clicksData, '#f59e0b', 'rgba(245,158,11,0.1)');
-        this.renderTimeChart('bouncesChart', 'bounces', bouncesData, '#ef4444', 'rgba(239,68,68,0.1)');
+        this.renderTimeChart('viewsChart', 'views', viewsData, '#10b981', 'rgba(16,185,129,0.12)');
+        this.renderTimeChart('clicksChart', 'clicks', clicksData, '#f59e0b', 'rgba(245,158,11,0.12)');
+        this.renderTimeChart('bouncesChart', 'bounces', bouncesData, '#ea2261', 'rgba(234,34,97,0.12)');
         this.renderLinksChart(linksData);
         this.renderLinksTable(linksData);
     },
@@ -287,6 +325,7 @@ const Analytics = {
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
 
+        const theme = this.getThemeColors();
         if (this.charts[key]) this.charts[key].destroy();
 
         if (!data.length) {
@@ -314,18 +353,46 @@ const Analytics = {
                     borderColor,
                     backgroundColor: bgColor,
                     fill: true,
-                    tension: 0.3,
+                    tension: 0.35,
+                    borderWidth: 2.5,
                     pointRadius: 4,
-                    pointHoverRadius: 6,
+                    pointHoverRadius: 7,
+                    pointBackgroundColor: borderColor,
                 }],
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { labels: { color: '#8b8fa3' } } },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: theme.textColor,
+                            font: { family: 'Plus Jakarta Sans', weight: 500, size: 12 },
+                            usePointStyle: true,
+                            pointStyle: 'circle',
+                        },
+                    },
+                    tooltip: {
+                        backgroundColor: theme.tooltipBg,
+                        titleColor: theme.tooltipText,
+                        bodyColor: theme.tooltipText,
+                        borderColor: theme.tooltipBorder,
+                        borderWidth: 1,
+                        padding: 12,
+                        cornerRadius: 10,
+                        bodyFont: { family: 'Plus Jakarta Sans' },
+                    },
+                },
                 scales: {
-                    x: { ticks: { color: '#8b8fa3' }, grid: { color: '#2a2e3f' } },
-                    y: { ticks: { color: '#8b8fa3' }, grid: { color: '#2a2e3f' }, beginAtZero: true },
+                    x: {
+                        ticks: { color: theme.textColor, font: { family: 'Plus Jakarta Sans', size: 11 } },
+                        grid: { color: theme.gridColor, drawBorder: false },
+                    },
+                    y: {
+                        ticks: { color: theme.textColor, font: { family: 'Plus Jakarta Sans', size: 11 } },
+                        grid: { color: theme.gridColor, drawBorder: false },
+                        beginAtZero: true,
+                    },
                 },
             },
         });
@@ -335,6 +402,7 @@ const Analytics = {
         const ctx = document.getElementById('linksChart');
         if (!ctx) return;
 
+        const theme = this.getThemeColors();
         if (this.charts.links) this.charts.links.destroy();
 
         if (!data.length) {
@@ -365,22 +433,40 @@ const Analytics = {
                 datasets: [{
                     label: 'Clicks',
                     data: values,
-                    backgroundColor: 'rgba(139, 92, 246, 0.7)',
-                    borderRadius: 4,
+                    backgroundColor: 'rgba(83, 58, 253, 0.82)',
+                    borderRadius: 6,
                 }],
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 indexAxis: 'y',
-                plugins: { legend: { display: false } },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: theme.tooltipBg,
+                        titleColor: theme.tooltipText,
+                        bodyColor: theme.tooltipText,
+                        borderColor: theme.tooltipBorder,
+                        borderWidth: 1,
+                        padding: 12,
+                        cornerRadius: 10,
+                    },
+                },
                 scales: {
-                    x: { ticks: { color: '#8b8fa3' }, grid: { color: '#2a2e3f' }, beginAtZero: true },
-                    y: { ticks: { color: '#8b8fa3', font: { size: 11 } }, grid: { display: false } },
+                    x: {
+                        ticks: { color: theme.textColor, font: { family: 'Plus Jakarta Sans', size: 11 } },
+                        grid: { color: theme.gridColor, drawBorder: false },
+                        beginAtZero: true,
+                    },
+                    y: {
+                        ticks: { color: theme.textColor, font: { family: 'Plus Jakarta Sans', size: 11 } },
+                        grid: { display: false },
+                    },
                 },
             },
         });
-    },
+    },},
 
     renderLinksTable(data) {
         const el = document.getElementById('linksTable');
@@ -501,3 +587,14 @@ const Analytics = {
         }
     },
 };
+
+// Listen to theme switch to dynamically update analytics charts
+window.addEventListener('themeChanged', () => {
+    if (App.currentPage === 'analytics') {
+        Analytics.renderComparisonChart();
+        if (Analytics.selectedCampaignId) {
+            Analytics.loadCampaignAnalytics();
+        }
+    }
+});
+

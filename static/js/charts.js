@@ -3,6 +3,19 @@
  */
 const Dashboard = {
     charts: {},
+    campaignsData: [],
+
+    getThemeColors() {
+        const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+        return {
+            isDark,
+            textColor: isDark ? '#94a3b8' : '#64748d',
+            gridColor: isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(0, 55, 112, 0.06)',
+            tooltipBg: isDark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.95)',
+            tooltipText: isDark ? '#f8fafc' : '#0d253d',
+            tooltipBorder: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(227, 232, 238, 0.9)',
+        };
+    },
 
     async render() {
         App.setContent('<div class="loading-spinner">Loading dashboard...</div>');
@@ -24,6 +37,7 @@ const Dashboard = {
             if (campaignsRes.status === 'fulfilled') {
                 campaigns = campaignsRes.value?.data?.results || [];
             }
+            this.campaignsData = campaigns;
 
             let html = `
                 <div class="stats-grid">
@@ -64,12 +78,12 @@ const Dashboard = {
                     </div>
                 </div>
 
-                <div class="card" style="margin-top:20px">
+                <div class="card" style="margin-top:24px">
                     <div class="card-header">
                         <h3 class="card-title">Recent Campaigns</h3>
                         <a href="#/campaigns" class="btn btn-sm">View All</a>
                     </div>
-                    <div class="table-wrapper" style="border:none">
+                    <div class="table-wrapper" style="border:none;box-shadow:none;background:transparent">
                         <table>
                             <thead><tr>
                                 <th>Name</th><th>Status</th><th>Lists</th><th>Created</th>
@@ -87,7 +101,7 @@ const Dashboard = {
             });
 
             if (!campaigns.length) {
-                html += '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">No campaigns yet</td></tr>';
+                html += '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:24px">No campaigns yet</td></tr>';
             }
 
             html += '</tbody></table></div></div>';
@@ -106,7 +120,8 @@ const Dashboard = {
         const ctx = document.getElementById('campaignChart');
         if (!ctx) return;
 
-        const recent = campaigns.slice(0, 8).reverse();
+        const theme = this.getThemeColors();
+        const recent = (campaigns || this.campaignsData).slice(0, 8).reverse();
         const labels = recent.map(c => c.name?.substring(0, 20) || 'Untitled');
         const sent = recent.map(c => c.to_send || 0);
         const views = recent.map(c => c.views || 0);
@@ -118,20 +133,46 @@ const Dashboard = {
             data: {
                 labels,
                 datasets: [
-                    { label: 'Sent', data: sent, backgroundColor: 'rgba(99, 102, 241, 0.7)', borderRadius: 4 },
-                    { label: 'Views', data: views, backgroundColor: 'rgba(34, 197, 94, 0.7)', borderRadius: 4 },
-                    { label: 'Clicks', data: clicks, backgroundColor: 'rgba(245, 158, 11, 0.7)', borderRadius: 4 },
+                    { label: 'Sent', data: sent, backgroundColor: 'rgba(83, 58, 253, 0.82)', borderRadius: 6 },
+                    { label: 'Views', data: views, backgroundColor: 'rgba(16, 185, 129, 0.82)', borderRadius: 6 },
+                    { label: 'Clicks', data: clicks, backgroundColor: 'rgba(245, 158, 11, 0.82)', borderRadius: 6 },
                 ],
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: { labels: { color: '#8b8fa3' } },
+                    legend: {
+                        labels: {
+                            color: theme.textColor,
+                            font: { family: 'Plus Jakarta Sans', weight: 500, size: 12 },
+                            usePointStyle: true,
+                            pointStyle: 'circle',
+                            padding: 18,
+                        },
+                    },
+                    tooltip: {
+                        backgroundColor: theme.tooltipBg,
+                        titleColor: theme.tooltipText,
+                        bodyColor: theme.tooltipText,
+                        borderColor: theme.tooltipBorder,
+                        borderWidth: 1,
+                        padding: 12,
+                        cornerRadius: 10,
+                        bodyFont: { family: 'Plus Jakarta Sans' },
+                        titleFont: { family: 'Plus Jakarta Sans', weight: 600 },
+                    },
                 },
                 scales: {
-                    x: { ticks: { color: '#8b8fa3' }, grid: { color: '#2a2e3f' } },
-                    y: { ticks: { color: '#8b8fa3' }, grid: { color: '#2a2e3f' }, beginAtZero: true },
+                    x: {
+                        ticks: { color: theme.textColor, font: { family: 'Plus Jakarta Sans', size: 11 } },
+                        grid: { color: theme.gridColor, drawBorder: false },
+                    },
+                    y: {
+                        ticks: { color: theme.textColor, font: { family: 'Plus Jakarta Sans', size: 11 } },
+                        grid: { color: theme.gridColor, drawBorder: false },
+                        beginAtZero: true,
+                    },
                 },
             },
         });
@@ -141,34 +182,74 @@ const Dashboard = {
         const ctx = document.getElementById('statusChart');
         if (!ctx) return;
 
+        const theme = this.getThemeColors();
         const statusCounts = {};
-        campaigns.forEach(c => {
+        (campaigns || this.campaignsData).forEach(c => {
             statusCounts[c.status] = (statusCounts[c.status] || 0) + 1;
         });
 
         const colorMap = {
-            draft: '#3b82f6', running: '#22c55e', finished: '#6366f1',
-            paused: '#f59e0b', cancelled: '#ef4444', scheduled: '#8b5cf6',
+            draft: '#3b82f6',
+            running: '#10b981',
+            finished: '#533afd',
+            paused: '#f59e0b',
+            cancelled: '#ea2261',
+            scheduled: '#8b5cf6',
         };
 
         const labels = Object.keys(statusCounts);
         const data = Object.values(statusCounts);
-        const bgColors = labels.map(s => colorMap[s] || '#5a5e72');
+        const bgColors = labels.map(s => colorMap[s] || '#64748b');
 
         if (this.charts.status) this.charts.status.destroy();
         this.charts.status = new Chart(ctx, {
             type: 'doughnut',
             data: {
                 labels,
-                datasets: [{ data, backgroundColor: bgColors, borderWidth: 0 }],
+                datasets: [{
+                    data,
+                    backgroundColor: bgColors,
+                    borderWidth: 2,
+                    borderColor: theme.isDark ? '#0f172a' : '#ffffff',
+                    hoverOffset: 6,
+                }],
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                cutout: '70%',
                 plugins: {
-                    legend: { position: 'bottom', labels: { color: '#8b8fa3', padding: 16 } },
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            color: theme.textColor,
+                            padding: 16,
+                            font: { family: 'Plus Jakarta Sans', weight: 500, size: 12 },
+                            usePointStyle: true,
+                            pointStyle: 'circle',
+                        },
+                    },
+                    tooltip: {
+                        backgroundColor: theme.tooltipBg,
+                        titleColor: theme.tooltipText,
+                        bodyColor: theme.tooltipText,
+                        borderColor: theme.tooltipBorder,
+                        borderWidth: 1,
+                        padding: 12,
+                        cornerRadius: 10,
+                        bodyFont: { family: 'Plus Jakarta Sans' },
+                    },
                 },
             },
         });
     },
 };
+
+// Listen to theme switch to dynamically update charts
+window.addEventListener('themeChanged', () => {
+    if (App.currentPage === 'dashboard') {
+        Dashboard.renderCampaignChart();
+        Dashboard.renderStatusChart();
+    }
+});
+

@@ -152,11 +152,11 @@ const App = {
         document.getElementById('modalBody').innerHTML = `
             <p>${this.escapeHtml(message)}</p>
             <div id="progressPhase" style="margin-top:14px;font-weight:600;color:var(--text-primary)">Starting...</div>
-            <div style="margin-top:8px;background:var(--bg-secondary);border-radius:8px;height:20px;overflow:hidden;border:1px solid var(--border)">
-                <div id="progressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#3498db,#2ecc71);transition:width 0.3s ease"></div>
+            <div style="margin-top:10px;background:var(--bg-input);border-radius:9999px;height:12px;overflow:hidden;border:1px solid var(--glass-border);box-shadow:inset 0 1px 3px rgba(0,0,0,0.2)">
+                <div id="progressBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--primary),var(--emerald));border-radius:9999px;box-shadow:0 0 12px var(--primary-glow);transition:width 0.3s cubic-bezier(0.16,1,0.3,1)"></div>
             </div>
-            <div id="progressStats" style="margin-top:8px;font-size:0.9rem;color:var(--text-secondary);text-align:center">0 / 0</div>
-            <div id="progressMessage" style="margin-top:8px;font-size:0.85rem;color:var(--text-secondary);font-family:monospace;word-break:break-word"></div>
+            <div id="progressStats" style="margin-top:10px;font-size:0.88rem;color:var(--text-secondary);text-align:center;font-feature-settings:'tnum'">0 / 0</div>
+            <div id="progressMessage" style="margin-top:8px;font-size:0.82rem;color:var(--text-muted);font-family:monospace;word-break:break-word;text-align:center"></div>
         `;
         document.getElementById('modalCancel').style.display = 'none';
         document.getElementById('modalConfirm').style.display = 'none';
