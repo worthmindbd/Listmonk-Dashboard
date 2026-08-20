@@ -75,7 +75,6 @@ async def fetch_filtered_bounces_page(
     needed = page * per_page
     collected: list[dict] = []
     lm_page = 1
-    raw_total = 0
 
     while len(collected) < needed and lm_page <= MAX_LM_PAGES:
         res = await client.get_bounces(
@@ -83,8 +82,6 @@ async def fetch_filtered_bounces_page(
         )
         data = res.get("data", {})
         batch = [b for b in data.get("results", []) if b.get("type") == bounce_type]
-        if lm_page == 1:
-            raw_total = data.get("total", 0)
         if not batch:
             break
         collected.extend(await filter_bounces_excluding_openers_fast(client, batch))
@@ -94,9 +91,15 @@ async def fetch_filtered_bounces_page(
 
     start = (page - 1) * per_page
     results = collected[start:start + per_page]
-    total = estimate_filtered_hard_total(campaign_id)
-    if total is None:
-        total = len(collected) if len(collected) < needed else raw_total
+
+    # Total should match what the user sees: hard-bounce cache is authoritative
+    # for hard bounces (already excludes openers); otherwise use the actual
+    # filtered count so pagination never overcounts.
+    total = len(collected)
+    if bounce_type == "hard":
+        cached = estimate_filtered_hard_total(campaign_id)
+        if cached is not None:
+            total = cached
 
     return {"data": {"results": results, "total": total}}
 

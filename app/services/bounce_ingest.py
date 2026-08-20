@@ -278,6 +278,15 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                     subject = msg.get("Subject", "")
                     body = _extract_body(msg)
 
+                    # Parse bounce date from the email Date header
+                    bounce_date = None
+                    date_str = msg.get("Date", "")
+                    if date_str:
+                        try:
+                            bounce_date = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=timezone.utc)
+                        except (ValueError, TypeError, AttributeError):
+                            bounce_date = None
+
                     recipient = _extract_bounced_recipient(msg, body)
                     if not recipient:
                         skipped += 1
@@ -315,6 +324,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                         msg,
                         subscriber_list_ids=sub_list_ids,
                         recent_campaigns=recent_campaigns,
+                        bounce_date=bounce_date,
                     )
                     if not campaign:
                         skipped += 1
@@ -390,11 +400,13 @@ def _pick_campaign(
     msg: email.message.EmailMessage,
     subscriber_list_ids: set,
     recent_campaigns: list,
+    bounce_date: Optional[datetime] = None,
 ) -> Optional[dict]:
     """
     Pick the campaign this bounce belongs to:
       1. Campaign UUID/id extracted from attached original message headers
       2. Most recent campaign targeting any of subscriber's lists
+         that was created on or before the bounce date.
     Returns the campaign dict or None.
     """
     hint = _extract_campaign_hint(msg)
@@ -403,7 +415,8 @@ def _pick_campaign(
             if str(camp.get("uuid", "")) == hint or str(camp.get("id", "")) == hint:
                 return camp
 
-    now = datetime.now(timezone.utc)
+    # Fall back to current time when bounce date is unavailable
+    cutoff = bounce_date if bounce_date is not None else datetime.now(timezone.utc)
     for camp in recent_campaigns:
         camp_list_ids = [l.get("id") for l in (camp.get("lists") or [])]
         if not camp_list_ids:
@@ -417,7 +430,7 @@ def _pick_campaign(
             camp_date = datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             continue
-        if camp_date <= now:
+        if camp_date <= cutoff:
             return camp
 
     return None

@@ -209,6 +209,7 @@ async def reset_all_unsubscribes():
     restored = 0
     failed = 0
     details = []
+    failed_records = []
 
     for r in records:
         sub_id = r.get("subscriber_id")
@@ -217,6 +218,7 @@ async def reset_all_unsubscribes():
 
         if not sub_id:
             failed += 1
+            failed_records.append(r)
             details.append(f"SKIP {email_addr}: no subscriber_id")
             continue
 
@@ -227,6 +229,7 @@ async def reset_all_unsubscribes():
 
             if not subscriber:
                 failed += 1
+                failed_records.append(r)
                 details.append(f"SKIP {email_addr}: subscriber {sub_id} not found")
                 continue
 
@@ -255,11 +258,13 @@ async def reset_all_unsubscribes():
 
         except Exception as e:
             failed += 1
+            failed_records.append(r)
             details.append(f"FAIL {email_addr}: {e}")
             print(f"[RESET] Failed: {email_addr}: {e}")
 
-    # Clear the log after processing
-    save_log([])
+    # Only clear records that were successfully restored;
+    # failed records stay in the log for retry.
+    save_log(failed_records)
 
     return {
         "message": f"Reset complete: {restored} restored, {failed} failed",

@@ -153,19 +153,13 @@ async def export_campaign_subscribers(campaign_id: int, engagement_type: str):
 async def get_campaign(campaign_id: int):
     result = await listmonk.get_campaign(campaign_id)
 
-    # Replace bounce count with hard bounces from cache
+    # Replace bounce count with hard-bounce cache (populated at startup
+    # and refreshed every 5 min).  Returns 0 when the campaign has no
+    # hard bounces or the initial cache update is still in progress.
     campaign = result.get("data", {})
     if campaign:
-        cached_counts = get_all_hard_bounce_counts()
-
-        # Use cache if available, otherwise fetch directly
-        if cached_counts:
-            # Cache has data - use it (get returns 0 if not in cache)
-            campaign["bounces"] = cached_counts.get(campaign_id, 0)
-        else:
-            from app.services.bounce_list import estimate_filtered_hard_total
-
-            campaign["bounces"] = estimate_filtered_hard_total(campaign_id) or 0
+        cached = get_all_hard_bounce_counts()
+        campaign["bounces"] = cached.get(campaign_id, 0)
 
     return result
 

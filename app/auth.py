@@ -9,6 +9,7 @@ import logging
 import os
 import secrets
 import time
+from pathlib import Path
 from fastapi import Request, Response
 from app.config import settings
 
@@ -19,12 +20,38 @@ COOKIE_NAME = "lmpro_session"
 # Session duration: 7 days
 SESSION_MAX_AGE = 7 * 24 * 60 * 60
 
-# Secret key for signing cookies (auto-generated on first run, persists in .env)
-_secret_key = os.getenv("SESSION_SECRET", "")
-if not _secret_key:
-    _secret_key = secrets.token_hex(32)
-    logger.warning("SESSION_SECRET not set; generated ephemeral key. "
-                   "Set SESSION_SECRET in .env for persistent sessions across restarts.")
+# Secret key for signing cookies (auto-generated on first run, persisted to .env)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_or_create_secret_key() -> str:
+    """Load SESSION_SECRET from env, or generate a new one and persist it to .env."""
+    key = os.getenv("SESSION_SECRET", "")
+    if key:
+        return key
+
+    key = secrets.token_hex(32)
+
+    # Try to persist so sessions survive restarts (dev / non-Docker).
+    # In Docker, the .env is bind-mounted read-only; persistence fails
+    # silently but the user should set SESSION_SECRET explicitly.
+    dotenv_path = _REPO_ROOT / ".env"
+    try:
+        with open(dotenv_path, "a") as f:
+            f.write(f"\nSESSION_SECRET={key}\n")
+        os.environ["SESSION_SECRET"] = key
+        logger.info("Generated and persisted SESSION_SECRET to .env")
+    except OSError:
+        logger.warning(
+            "SESSION_SECRET not set; generated ephemeral key. "
+            "Sessions will break on restart. "
+            "Set SESSION_SECRET in .env for persistent sessions."
+        )
+    return key
+
+
+_secret_key = _load_or_create_secret_key()
 
 
 def _sign(value: str) -> str:
@@ -42,6 +69,7 @@ def create_session(response: Response):
         max_age=SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
+        secure=True,
     )
 
 
@@ -74,9 +102,19 @@ def clear_session(response: Response):
 
 
 def check_credentials(username: str, password: str) -> bool:
-    """Validate login credentials against .env values."""
-    valid_user = os.getenv("DASHBOARD_USER", "admin")
-    valid_pass = os.getenv("DASHBOARD_PASS", "admin")
+    """Validate login credentials against DASHBOARD_USER / DASHBOARD_PASS env vars.
+
+    Returns False when either env var is unset, so a misconfigured deployment
+    is locked rather than silently accepting default credentials.
+    """
+    valid_user = os.getenv("DASHBOARD_USER", "")
+    valid_pass = os.getenv("DASHBOARD_PASS", "")
+    if not valid_user or not valid_pass:
+        logger.error(
+            "DASHBOARD_USER and DASHBOARD_PASS must be set in .env. "
+            "Login is disabled until credentials are configured."
+        )
+        return False
     return (
         hmac.compare_digest(username, valid_user)
         and hmac.compare_digest(password, valid_pass)

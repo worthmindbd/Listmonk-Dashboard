@@ -5,7 +5,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
@@ -46,7 +46,7 @@ _hard_bounce_cache_task = None
 class AuthMiddleware(BaseHTTPMiddleware):
     """Protect all routes except login and static files."""
 
-    OPEN_PATHS = {"/auth/login", "/auth/logout"}
+    OPEN_PATHS = {"/auth/login", "/auth/logout", "/favicon.ico"}
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -191,7 +191,12 @@ async def logout():
     return response
 
 
-# ── Dashboard ────────────────────────────────────────────
+# ── Favicon & Dashboard ───────────────────────────────────
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(BASE_DIR / "static" / "favicon.png", media_type="image/png")
+
 
 @app.get("/")
 async def index(request: Request):
