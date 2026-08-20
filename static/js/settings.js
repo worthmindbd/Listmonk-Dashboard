@@ -147,7 +147,7 @@ const Settings = {
                 <div class="card-header"><h3 class="card-title">Schedule Configuration</h3></div>
 
                 <div class="form-group" style="margin-bottom:20px">
-                    <label class="checkbox-label" style="font-size:1rem;padding:12px 16px;border-width:2px;${enabled ? 'border-color:var(--success);background:var(--success-bg)' : ''}">
+                    <label class="checkbox-label ${enabled ? 'toggle-on' : ''}" style="font-size:1rem;padding:12px 18px;border-width:2px">
                         <input type="checkbox" id="schedEnabled" ${enabled ? 'checked' : ''} onchange="Settings.toggleScheduler(this.checked)">
                         <span style="font-weight:600">${enabled ? 'Scheduler is ON' : 'Scheduler is OFF'}</span>
                     </label>
@@ -187,8 +187,8 @@ const Settings = {
 
                 <div style="margin-top:24px;margin-bottom:24px">
                     <label style="font-size:0.85rem;font-weight:500;color:var(--text-secondary);margin-bottom:10px;display:block">Daily Timeline</label>
-                    <div style="position:relative;height:44px;background:var(--bg-input);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border-color)">
-                        <div style="position:absolute;left:${(s.start_hour * 60 + s.start_minute) / 1440 * 100}%;right:${100 - (s.end_hour * 60 + s.end_minute) / 1440 * 100}%;top:0;bottom:0;background:rgba(34,197,94,0.2);border-left:2px solid var(--success);border-right:2px solid var(--success)"></div>
+                    <div style="position:relative;height:44px;background:var(--bg-input);border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--glass-border)">
+                        <div style="position:absolute;left:${(s.start_hour * 60 + s.start_minute) / 1440 * 100}%;right:${100 - (s.end_hour * 60 + s.end_minute) / 1440 * 100}%;top:0;bottom:0;background:rgba(16,185,129,0.2);border-left:2px solid var(--emerald);border-right:2px solid var(--emerald)"></div>
                         ${this.renderTimeMarkers()}
                     </div>
                     <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--text-muted);margin-top:6px;padding:0 2px">
@@ -282,7 +282,7 @@ const Settings = {
         let html = '';
         for (let h = 0; h <= 24; h += 3) {
             const pct = (h / 24) * 100;
-            html += `<div style="position:absolute;left:${pct}%;top:0;bottom:0;width:1px;background:var(--border-color)"></div>`;
+            html += `<div style="position:absolute;left:${pct}%;top:0;bottom:0;width:1px;background:var(--glass-border)"></div>`;
         }
         return html;
     },

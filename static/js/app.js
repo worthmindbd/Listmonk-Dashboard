@@ -67,7 +67,18 @@ const App = {
         // Render page
         const content = document.getElementById('contentArea');
         content.innerHTML = '<div class="loading-spinner">Loading...</div>';
-        page.render();
+        try {
+            const res = page.render();
+            if (res && typeof res.catch === 'function') {
+                res.catch(err => {
+                    console.error(`Error rendering page ${hash}:`, err);
+                    content.innerHTML = `<div class="empty-state"><h3>Failed to load ${App.escapeHtml(page.title)}</h3><p>${App.escapeHtml(err?.message || '')}</p></div>`;
+                });
+            }
+        } catch (err) {
+            console.error(`Error rendering page ${hash}:`, err);
+            content.innerHTML = `<div class="empty-state"><h3>Failed to load ${App.escapeHtml(page.title)}</h3><p>${App.escapeHtml(err?.message || '')}</p></div>`;
+        }
     },
 
     async checkConnection() {

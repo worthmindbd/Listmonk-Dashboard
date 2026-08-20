@@ -37,7 +37,24 @@
     --info: #3b82f6;
     --info-bg: rgba(59, 130, 246, 0.12);
 
+    /* ── Semantic Aliases & Compatibility Tokens ────────────── */
+    --accent: var(--primary);
+    --accent-soft: var(--primary-soft);
+    --success: var(--emerald);
+    --success-bg: var(--emerald-bg);
+    --warning: var(--lemon);
+    --warning-bg: var(--lemon-bg);
+    --danger: var(--ruby);
+    --danger-bg: var(--ruby-bg);
+    --error: var(--ruby);
+    --border-color: var(--glass-border);
+    --radius: var(--radius-md);
+    --glass-bg: var(--bg-surface);
+    --input-bg: var(--bg-input);
+    --input-border: var(--glass-border);
+
     /* ── Dark Theme Tokens (Default) ───────────────────────── */
+    color-scheme: dark;
     --bg-canvas: #090d16;
     --bg-surface: rgba(15, 23, 42, 0.65);
     --bg-surface-elevated: rgba(22, 33, 58, 0.78);
@@ -71,6 +88,7 @@
 
 /* ── Light Theme ───────────────────────────────────────────── */
 [data-theme="light"] {
+    color-scheme: light;
     --bg-canvas: #f6f9fc;
     --bg-surface: rgba(255, 255, 255, 0.82);
     --bg-surface-elevated: rgba(255, 255, 255, 0.94);
@@ -86,6 +104,22 @@
     --text-primary: #0d253d;
     --text-secondary: #273951;
     --text-muted: #64748d;
+
+    /* Semantic light overrides with WCAG AAA contrast */
+    --accent: var(--primary);
+    --accent-soft: var(--primary-soft);
+    --success: #059669;
+    --success-bg: rgba(16, 185, 129, 0.12);
+    --warning: #d97706;
+    --warning-bg: rgba(245, 158, 11, 0.12);
+    --danger: #dc2626;
+    --danger-bg: rgba(234, 34, 97, 0.12);
+    --error: #dc2626;
+    --border-color: var(--glass-border);
+    --radius: var(--radius-md);
+    --glass-bg: var(--bg-surface);
+    --input-bg: var(--bg-input);
+    --input-border: var(--glass-border);
 }
 
 /* ── Reset & Base ──────────────────────────────────────────── */
@@ -660,6 +694,7 @@ td strong,
 .stat-card.success::before { background: linear-gradient(90deg, var(--emerald), #34d399); }
 .stat-card.warning::before { background: linear-gradient(90deg, var(--lemon), #fbbf24); }
 .stat-card.danger::before { background: linear-gradient(90deg, var(--ruby), var(--magenta)); }
+.stat-card.info::before, .stat-card.cyan::before { background: linear-gradient(90deg, var(--cyan), #38bdf8); }
 
 .stat-label {
     font-size: 0.76rem;
@@ -683,6 +718,13 @@ td strong,
 .stat-card.success .stat-value { color: var(--emerald); }
 .stat-card.warning .stat-value { color: var(--lemon); }
 .stat-card.danger .stat-value { color: var(--ruby); }
+.stat-card.info .stat-value, .stat-card.cyan .stat-value { color: var(--cyan); }
+
+[data-theme="light"] .stat-card.accent .stat-value { color: var(--primary); }
+[data-theme="light"] .stat-card.success .stat-value { color: #059669; }
+[data-theme="light"] .stat-card.warning .stat-value { color: #d97706; }
+[data-theme="light"] .stat-card.danger .stat-value { color: #dc2626; }
+[data-theme="light"] .stat-card.info .stat-value, [data-theme="light"] .stat-card.cyan .stat-value { color: #0284c7; }
 
 /* ── Tables & Data Surfaces (from DESIGN.md) ───────────────── */
 .table-wrapper {
@@ -928,6 +970,10 @@ select {
     padding-right: 36px;
 }
 
+[data-theme="light"] select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+}
+
 select option {
     background: #0f172a;
     color: #f8fafc;
@@ -936,6 +982,23 @@ select option {
 [data-theme="light"] select option {
     background: #ffffff;
     color: #0d253d;
+}
+
+/* ── Inline Code Elements ──────────────────────────────────── */
+code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.82em;
+    padding: 2px 6px;
+    background: var(--bg-surface-hover);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-xs);
+    color: var(--primary-soft);
+}
+
+[data-theme="light"] code {
+    background: rgba(83, 58, 253, 0.07);
+    color: var(--primary);
+    border-color: rgba(83, 58, 253, 0.18);
 }
 
 /* ── Checkbox Buttons / Pills ──────────────────────────────── */
@@ -982,6 +1045,19 @@ select option {
 
 .checkbox-label:has(input:checked) span {
     color: #ffffff;
+    font-weight: 600;
+}
+
+/* Specific styling for active scheduler toggle */
+.checkbox-label.toggle-on {
+    border-color: var(--emerald) !important;
+    background: linear-gradient(135deg, var(--emerald) 0%, #059669 100%) !important;
+    color: #ffffff !important;
+    box-shadow: 0 2px 12px var(--emerald-glow) !important;
+}
+
+.checkbox-label.toggle-on span {
+    color: #ffffff !important;
     font-weight: 600;
 }
 
@@ -1045,10 +1121,22 @@ select option {
     border-color: rgba(83, 58, 253, 0.3);
 }
 
+[data-theme="light"] .badge-primary {
+    color: var(--primary);
+    background: rgba(83, 58, 253, 0.1);
+    border-color: rgba(83, 58, 253, 0.25);
+}
+
 .badge-default {
     background: var(--bg-surface-hover);
     color: var(--text-secondary);
     border-color: var(--glass-border);
+}
+
+[data-theme="light"] .badge-default {
+    background: rgba(100, 116, 139, 0.12);
+    color: #273951;
+    border-color: rgba(100, 116, 139, 0.25);
 }
 
 /* ── Tags ──────────────────────────────────────────────────── */
@@ -1061,6 +1149,12 @@ select option {
     font-size: 0.73rem;
     color: var(--text-secondary);
     margin: 2px;
+}
+
+[data-theme="light"] .tag {
+    background: rgba(100, 116, 139, 0.1);
+    color: #273951;
+    border-color: var(--glass-border);
 }
 
 /* ── Search Bar ────────────────────────────────────────────── */
@@ -1366,10 +1460,41 @@ td .action-btns {
     box-shadow: 0 2px 12px rgba(83, 58, 253, 0.15);
 }
 
+[data-theme="light"] .step.active {
+    background: rgba(83, 58, 253, 0.1);
+    color: var(--primary);
+    border-color: var(--primary);
+}
+
 .step.completed {
     background: var(--emerald-bg);
     border-color: rgba(16, 185, 129, 0.3);
     color: var(--emerald);
+}
+
+[data-theme="light"] .step.completed {
+    background: rgba(16, 185, 129, 0.12);
+    color: #059669;
+    border-color: rgba(16, 185, 129, 0.3);
+}
+
+/* ── Progress Bars ─────────────────────────────────────────── */
+.progress-bar {
+    margin-top: 10px;
+    background: var(--bg-input);
+    border-radius: var(--radius-pill);
+    height: 12px;
+    overflow: hidden;
+    border: 1px solid var(--glass-border);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary), var(--emerald));
+    border-radius: var(--radius-pill);
+    box-shadow: 0 0 12px var(--primary-glow);
+    transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* ── File Drop Zone ────────────────────────────────────────── */
@@ -1423,6 +1548,10 @@ td .action-btns {
     justify-content: center;
     padding: 20px;
     animation: fadeIn 0.2s ease-out;
+}
+
+[data-theme="light"] .modal-overlay {
+    background: rgba(13, 37, 61, 0.45);
 }
 
 .modal {

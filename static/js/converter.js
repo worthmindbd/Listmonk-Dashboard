@@ -283,7 +283,7 @@ const Converter = {
 
         dialog.style.display = 'block';
         dialog.innerHTML = `
-            <div style="border-top:1px solid var(--border-color);padding-top:16px">
+            <div style="border-top:1px solid var(--glass-border);padding-top:16px">
                 <h4 style="margin-bottom:12px">Import to ListMonk</h4>
                 <div class="form-group">
                     <label>Select Lists *</label>
@@ -332,11 +332,11 @@ const Converter = {
     async pollImportStatus() {
         const dialog = document.getElementById('importDialog');
         dialog.innerHTML = `
-            <div style="border-top:1px solid var(--border-color);padding-top:16px">
+            <div style="border-top:1px solid var(--glass-border);padding-top:16px">
                 <h4>Import Progress</h4>
                 <div class="progress-bar"><div class="progress-fill" id="importProgress" style="width:0%"></div></div>
-                <p id="importStatusText" style="font-size:0.85rem;color:var(--text-secondary)">Starting import...</p>
-                <pre id="importLogs" style="max-height:200px;overflow-y:auto;font-size:0.8rem;color:var(--text-muted);margin-top:12px;background:var(--bg-input);padding:12px;border-radius:var(--radius)"></pre>
+                <p id="importStatusText" style="font-size:0.85rem;color:var(--text-secondary);margin-top:8px">Starting import...</p>
+                <pre id="importLogs" style="max-height:200px;overflow-y:auto;font-size:0.8rem;color:var(--text-muted);margin-top:12px;background:var(--bg-input);padding:12px;border-radius:var(--radius-md);border:1px solid var(--glass-border)"></pre>
             </div>
         `;
 
