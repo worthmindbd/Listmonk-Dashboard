@@ -968,6 +968,16 @@ select {
     background-repeat: no-repeat;
     background-position: right 12px center;
     padding-right: 36px;
+    /* Native select elements on Linux/Chromium close prematurely if animated transitions or backdrop-filter run on focus */
+    transition: border-color 0.15s ease, color 0.15s ease;
+    backdrop-filter: none;
+}
+
+select:focus {
+    box-shadow: none;
+    border-color: var(--primary);
+    outline: 2px solid var(--primary-glow);
+    outline-offset: 1px;
 }
 
 [data-theme="light"] select {
