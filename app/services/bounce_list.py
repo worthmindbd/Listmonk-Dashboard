@@ -76,16 +76,18 @@ async def fetch_filtered_bounces_page(
     collected: list[dict] = []
     lm_page = 1
 
+    lm_total = 0
     while len(collected) < needed and lm_page <= MAX_LM_PAGES:
         res = await client.get_bounces(
             lm_page, LM_FETCH_SIZE, campaign_id, source, bounce_type,
         )
         data = res.get("data", {})
+        lm_total = data.get("total", 0)
         batch = [b for b in data.get("results", []) if b.get("type") == bounce_type]
         if not batch:
             break
         collected.extend(await filter_bounces_excluding_openers_fast(client, batch))
-        if lm_page * LM_FETCH_SIZE >= data.get("total", 0):
+        if lm_page * LM_FETCH_SIZE >= lm_total:
             break
         lm_page += 1
 
@@ -93,9 +95,14 @@ async def fetch_filtered_bounces_page(
     results = collected[start:start + per_page]
 
     # Total should match what the user sees: hard-bounce cache is authoritative
-    # for hard bounces (already excludes openers); otherwise use the actual
-    # filtered count so pagination never overcounts.
-    total = len(collected)
+    # for hard bounces (already excludes openers); otherwise use cached total or
+    # ListMonk's total (or actual collected count if we finished all pages).
+    reached_end = (lm_page * LM_FETCH_SIZE >= lm_total) or (len(collected) < needed)
+    if reached_end:
+        total = len(collected)
+    else:
+        total = max(lm_total, len(collected))
+
     if bounce_type == "hard":
         cached = estimate_filtered_hard_total(campaign_id)
         if cached is not None:
@@ -114,6 +121,7 @@ async def fetch_all_filtered_bounces(
     all_bounces = await client.paginate_all(
         client.get_bounces, per_page=500,
         campaign_id=campaign_id, source=source,
+        bounce_type=bounce_type,
     )
     if bounce_type:
         all_bounces = [b for b in all_bounces if b.get("type") == bounce_type]

@@ -283,7 +283,11 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                     date_str = msg.get("Date", "")
                     if date_str:
                         try:
-                            bounce_date = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=timezone.utc)
+                            dt = email.utils.parsedate_to_datetime(date_str)
+                            if dt.tzinfo is not None:
+                                bounce_date = dt.astimezone(timezone.utc)
+                            else:
+                                bounce_date = dt.replace(tzinfo=timezone.utc)
                         except (ValueError, TypeError, AttributeError):
                             bounce_date = None
 

@@ -351,7 +351,7 @@ const Templates = {
                 <button class="btn btn-secondary" onclick="Templates.render()">Back to Templates</button>
                 <span style="margin-left:12px;font-size:1.1rem;font-weight:600">${App.escapeHtml(t.name || '')}</span>
             </div>
-            <iframe class="preview-frame" srcdoc="${App.escapeHtml(t.body || '')}"></iframe>
+            <iframe class="preview-frame" sandbox="" srcdoc="${App.escapeHtml(t.body || '')}"></iframe>
         `);
     },
 

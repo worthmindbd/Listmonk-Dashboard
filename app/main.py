@@ -138,8 +138,8 @@ app.add_middleware(AuthMiddleware)
 
 
 @app.exception_handler(httpx.HTTPStatusError)
-async def httpx_error_handler(request, exc):
-    raise HTTPException(status_code=exc.response.status_code, detail=str(exc))
+async def httpx_error_handler(request: Request, exc: httpx.HTTPStatusError):
+    return JSONResponse(status_code=exc.response.status_code, content={"detail": str(exc)})
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 jinja_env = Environment(loader=FileSystemLoader(BASE_DIR / "templates"))
@@ -180,7 +180,7 @@ async def login(request: Request):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     response = JSONResponse({"status": "ok"})
-    create_session(response)
+    create_session(response, request)
     return response
 
 
@@ -247,6 +247,33 @@ async def get_schedule():
 
 @app.put("/api/scheduler")
 async def update_schedule(data: dict):
+    valid_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+    if "timezone" in data:
+        try:
+            ZoneInfo(str(data["timezone"]))
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {data['timezone']}")
+
+    for hour_key in ["start_hour", "end_hour"]:
+        if hour_key in data:
+            val = data[hour_key]
+            if not isinstance(val, int) or val < 0 or val > 23:
+                raise HTTPException(status_code=400, detail=f"{hour_key} must be an integer between 0 and 23")
+
+    for min_key in ["start_minute", "end_minute"]:
+        if min_key in data:
+            val = data[min_key]
+            if not isinstance(val, int) or val < 0 or val > 59:
+                raise HTTPException(status_code=400, detail=f"{min_key} must be an integer between 0 and 59")
+
+    if "days" in data:
+        if not isinstance(data["days"], list):
+            raise HTTPException(status_code=400, detail="days must be a list of weekday names")
+        for day in data["days"]:
+            if not isinstance(day, str) or day.lower() not in valid_days:
+                raise HTTPException(status_code=400, detail=f"Invalid day in days list: {day}")
+        data["days"] = [d.lower() for d in data["days"]]
+
     schedule = load_schedule()
     for key in ["enabled", "timezone", "start_hour", "start_minute",
                 "end_hour", "end_minute", "days"]:
@@ -260,7 +287,7 @@ async def update_schedule(data: dict):
             status_code=500,
             detail="Could not write schedule file (check data directory permissions).",
         )
-    if data.get("enabled"):
+    if schedule.get("enabled"):
         await run_scheduler_tick(listmonk)
     return {"status": "ok", "schedule": schedule}
 

@@ -100,6 +100,10 @@ const Unsubscribes = {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Export All
             </button>
+            <button class="btn btn-sm" onclick="Unsubscribes.resetAll()" title="Undo all unsubscribes and restore list memberships">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
+                Undo All
+            </button>
             <button class="btn btn-sm btn-primary" onclick="Unsubscribes.triggerScan()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 Scan Now
@@ -448,6 +452,10 @@ const Unsubscribes = {
                 signal: controller.signal,
             });
             clearTimeout(timeout);
+            if (resp.status === 401) {
+                window.location.href = '/auth/login';
+                return;
+            }
             const result = await resp.json();
             if (result.error) {
                 App.toast(result.error, 'error');
@@ -480,12 +488,7 @@ const Unsubscribes = {
     /* ── Settings ─────────────────────────────────────────── */
     async toggleBlocklist(enabled) {
         try {
-            const resp = await fetch('/api/unsubscribes/settings', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ blocklist_enabled: enabled }),
-            });
-            if (!resp.ok) throw new Error('Failed to update');
+            await API.put('/api/unsubscribes/settings', { blocklist_enabled: enabled });
             this.settings.blocklist_enabled = enabled;
             App.toast(`Action set to: ${enabled ? 'Unsubscribe + Blocklist' : 'Unsubscribe Only'}`, 'success');
             // Re-render to update the label
@@ -499,11 +502,10 @@ const Unsubscribes = {
     },
 
     async resetAll() {
-        if (!confirm('This will UNDO all unsubscribes — re-enable and re-subscribe all processed leads in ListMonk, then clear the log. Continue?')) return;
+        if (!confirm('This will UNDO all unsubscribes — re-enable and re-subscribe all processed leads in ListMonk, then remove restored records from the log. Continue?')) return;
         App.toast('Resetting all unsubscribes...', 'info');
         try {
-            const resp = await fetch('/api/unsubscribes/reset', { method: 'POST' });
-            const result = await resp.json();
+            const result = await API.post('/api/unsubscribes/reset');
             App.toast(result.message || 'Reset complete', 'success');
             await this.render();
         } catch (err) {

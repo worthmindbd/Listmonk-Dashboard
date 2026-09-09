@@ -70,7 +70,9 @@ async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
 
 @router.delete("/{bounce_id}")
 async def delete_bounce(bounce_id: int):
-    return await listmonk.delete_bounce(bounce_id)
+    res = await listmonk.delete_bounce(bounce_id)
+    asyncio.create_task(update_hard_bounce_counts())
+    return res
 
 
 @router.delete("")
@@ -80,7 +82,9 @@ async def delete_all_bounces(campaign_id: Optional[int] = None,
     that campaign (iterating + deleting in parallel). If bounce_type is set
     without campaign_id, delete all matching bounces. Otherwise delete all."""
     if not campaign_id and not bounce_type:
-        return await listmonk.delete_all_bounces()
+        res = await listmonk.delete_all_bounces()
+        asyncio.create_task(update_hard_bounce_counts())
+        return res
 
     all_bounces = await fetch_all_filtered_bounces(
         listmonk, bounce_type, campaign_id,
@@ -105,4 +109,5 @@ async def delete_all_bounces(campaign_id: Optional[int] = None,
                 logger.error(f"Failed to delete bounce {bid}: {exc}")
 
     await asyncio.gather(*(_delete(bid) for bid in bounce_ids))
+    asyncio.create_task(update_hard_bounce_counts())
     return {"deleted": deleted, "errors": errors, "campaign_id": campaign_id}

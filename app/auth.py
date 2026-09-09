@@ -10,7 +10,9 @@ import os
 import secrets
 import time
 from pathlib import Path
+from typing import Optional
 from fastapi import Request, Response
+from app.config import settings
 
 logger = logging.getLogger("auth")
 
@@ -19,22 +21,39 @@ COOKIE_NAME = "lmpro_session"
 # Session duration: 7 days
 SESSION_MAX_AGE = 7 * 24 * 60 * 60
 
-# Secret key for signing cookies (auto-generated on first run, persisted to .env)
+# Secret key for signing cookies (auto-generated on first run, persisted to DATA_DIR or .env)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_or_create_secret_key() -> str:
-    """Load SESSION_SECRET from env, or generate a new one and persist it to .env."""
+    """Load SESSION_SECRET from env, persisted key file in DATA_DIR, or generate a new one."""
     key = os.getenv("SESSION_SECRET", "")
     if key:
         return key
 
+    key_file = settings.data_path("session_secret.key")
+    if key_file.exists():
+        try:
+            persisted = key_file.read_text(encoding="utf-8").strip()
+            if persisted:
+                os.environ["SESSION_SECRET"] = persisted
+                return persisted
+        except OSError:
+            pass
+
     key = secrets.token_hex(32)
 
-    # Try to persist so sessions survive restarts (dev / non-Docker).
-    # In Docker, the .env is bind-mounted read-only; persistence fails
-    # silently but the user should set SESSION_SECRET explicitly.
+    # Persist to DATA_DIR so sessions survive restarts across Docker & dev
+    try:
+        key_file.write_text(key, encoding="utf-8")
+        os.environ["SESSION_SECRET"] = key
+        logger.info("Generated and persisted SESSION_SECRET to %s", key_file)
+        return key
+    except OSError:
+        pass
+
+    # Fallback to appending to .env if DATA_DIR write fails
     dotenv_path = _REPO_ROOT / ".env"
     try:
         with open(dotenv_path, "a") as f:
@@ -43,7 +62,7 @@ def _load_or_create_secret_key() -> str:
         logger.info("Generated and persisted SESSION_SECRET to .env")
     except OSError:
         logger.warning(
-            "SESSION_SECRET not set; generated ephemeral key. "
+            "SESSION_SECRET not set and could not be persisted. "
             "Sessions will break on restart. "
             "Set SESSION_SECRET in .env for persistent sessions."
         )
@@ -58,17 +77,34 @@ def _sign(value: str) -> str:
     return hmac.new(_secret_key.encode(), value.encode(), hashlib.sha256).hexdigest()
 
 
-def create_session(response: Response):
+def _is_secure_cookie(request: Optional[Request] = None) -> bool:
+    cookie_secure_env = os.getenv("COOKIE_SECURE", "").strip().lower()
+    if cookie_secure_env in ("1", "true", "yes"):
+        return True
+    if cookie_secure_env in ("0", "false", "no"):
+        return False
+    if request is not None:
+        if request.url.scheme == "https":
+            return True
+        if request.headers.get("x-forwarded-proto", "").lower() == "https":
+            return True
+        return False
+    return False
+
+
+def create_session(response: Response, request: Optional[Request] = None):
     """Set a signed session cookie on the response."""
     timestamp = str(int(time.time()))
     signature = _sign(timestamp)
     token = f"{timestamp}:{signature}"
+    is_secure = _is_secure_cookie(request)
     response.set_cookie(
         COOKIE_NAME, token,
         max_age=SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
-        secure=True,
+        secure=is_secure,
+        path="/",
     )
 
 
@@ -97,7 +133,12 @@ def verify_session(request: Request) -> bool:
 
 def clear_session(response: Response):
     """Remove the session cookie."""
-    response.delete_cookie(COOKIE_NAME)
+    response.delete_cookie(
+        COOKIE_NAME,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
 
 
 def check_credentials(username: str, password: str) -> bool:

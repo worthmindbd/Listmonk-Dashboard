@@ -6,8 +6,11 @@ imap_unsubscribe.py and link_unsubscribe.py.
 
 import asyncio
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
+from typing import Any
 
 from app.config import settings
 
@@ -32,6 +35,25 @@ def _normalize_campaign_key(key: str) -> str:
     return key
 
 
+def _atomic_write_json(file_path: Path, data: Any, indent: int = 2, ensure_ascii: bool = True) -> None:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=file_path.parent, delete=False, encoding="utf-8") as f:
+            temp_file = f.name
+            json.dump(data, f, indent=indent, ensure_ascii=ensure_ascii)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_file, file_path)
+    except Exception:
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
+        raise
+
+
 def load_log() -> list[dict]:
     try:
         records = json.loads(LOG_FILE.read_text())
@@ -50,7 +72,7 @@ def load_log() -> list[dict]:
 
 
 def save_log(records: list[dict]) -> None:
-    LOG_FILE.write_text(json.dumps(records, indent=2, ensure_ascii=False))
+    _atomic_write_json(LOG_FILE, records, indent=2, ensure_ascii=False)
 
 
 async def append_log(new_records: list[dict]) -> None:
@@ -71,4 +93,4 @@ def load_settings() -> dict:
 
 def save_settings(data: dict) -> None:
     merged = {**load_settings(), **data}
-    SETTINGS_FILE.write_text(json.dumps(merged, indent=2))
+    _atomic_write_json(SETTINGS_FILE, merged, indent=2, ensure_ascii=True)

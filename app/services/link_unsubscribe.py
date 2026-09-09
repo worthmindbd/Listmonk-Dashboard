@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from app.services.listmonk_client import ListMonkClient
 from app.services.unsubscribe_log import (
-    load_log, save_log, load_settings, _log_lock,
+    load_log, save_log, append_log, load_settings, _log_lock,
 )
 
 logger = logging.getLogger("link_unsubscribe")
@@ -181,9 +181,6 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
                 # Partial success — still log the unsubscribe
 
         campaign = _pick_campaign_for_list_ids(campaigns, unsub_list_ids)
-        if campaign["campaign_id"] is None:
-            logger.info(f"[LINK] Skipping {email}: no campaign targets their list(s)")
-            continue
         primary_list_id = campaign.get("matched_list_id")
         list_name = list_id_to_name.get(primary_list_id, "")
 
@@ -193,9 +190,9 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
             "source": "link",
             "keyword": None,
             "list_id": primary_list_id,
-            "campaign_id": campaign["campaign_id"],
-            "campaign_name": campaign["campaign_name"],
-            "campaign_key": campaign["campaign_key"],
+            "campaign_id": campaign.get("campaign_id"),
+            "campaign_name": campaign.get("campaign_name", "No matching campaign"),
+            "campaign_key": campaign.get("campaign_key", _current_campaign_key()),
             "subscriber_id": sid,
             "lists_removed": sub_lists,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -207,10 +204,7 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
         logger.info(f"[LINK] {action}: {email} (list: {list_name})")
 
     if new_records:
-        async with _log_lock:
-            existing_log = load_log()
-            existing_log.extend(new_records)
-            save_log(existing_log)
+        await append_log(new_records)
 
     return {
         "scanned_lists": scanned_lists,

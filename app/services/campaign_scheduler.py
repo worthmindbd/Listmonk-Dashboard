@@ -49,11 +49,21 @@ def load_schedule() -> dict:
     return dict(DEFAULT_SCHEDULE)
 
 
+import os
+import tempfile
+
 def save_schedule(schedule: dict):
-    """Save schedule to JSON file."""
+    """Save schedule to JSON file atomically."""
     try:
-        with open(SCHEDULE_FILE, "w") as f:
+        SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(
+            dir=SCHEDULE_FILE.parent,
+            prefix="schedule_",
+            suffix=".tmp",
+        )
+        with os.fdopen(temp_fd, "w") as f:
             json.dump(schedule, f, indent=2)
+        os.replace(temp_path, SCHEDULE_FILE)
     except OSError as e:
         logger.error(f"Failed to save schedule to {SCHEDULE_FILE}: {e}")
         raise
@@ -67,8 +77,6 @@ def is_within_send_window(schedule: dict) -> bool:
     # Check day of week
     day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
     allowed_days = {day_map[d] for d in schedule.get("days", []) if d in day_map}
-    if now.weekday() not in allowed_days:
-        return False
 
     # Check time window
     start = time(schedule["start_hour"], schedule["start_minute"])
@@ -76,10 +84,20 @@ def is_within_send_window(schedule: dict) -> bool:
     current = now.time()
 
     if start <= end:
+        if now.weekday() not in allowed_days:
+            return False
         return start <= current <= end
     else:
         # Overnight window (e.g., 20:00 to 08:00)
-        return current >= start or current <= end
+        # If current time is after start, the window began today.
+        # If current time is before end, the window began yesterday!
+        if current >= start:
+            return now.weekday() in allowed_days
+        elif current <= end:
+            yesterday_weekday = (now.weekday() - 1) % 7
+            return yesterday_weekday in allowed_days
+        else:
+            return False
 
 
 async def run_scheduler_tick(client: ListMonkClient):
@@ -97,9 +115,8 @@ async def run_scheduler_tick(client: ListMonkClient):
     logger.debug(f"Scheduler tick: {now.strftime('%A %H:%M %Z')} | in_window={in_window} | auto_paused={auto_paused}")
 
     try:
-        # Get all campaigns that are running or paused
-        result = await client.get_campaigns(1, 100)
-        campaigns = result.get("data", {}).get("results", [])
+        # Get all campaigns across all pages
+        campaigns = await client.paginate_all(client.get_campaigns, per_page=100)
 
         changed = False
 
@@ -129,10 +146,12 @@ async def run_scheduler_tick(client: ListMonkClient):
                 except Exception as e:
                     logger.error(f"Failed to resume campaign #{cid}: {e}")
 
-        # Clean up auto_paused list: remove any that are no longer in paused state
-        for camp in campaigns:
-            if camp["id"] in auto_paused and camp["status"] != "paused":
-                auto_paused.discard(camp["id"])
+        # Clean up auto_paused list: remove any that are no longer paused or no longer exist
+        camp_map = {c["id"]: c for c in campaigns}
+        for cid in list(auto_paused):
+            camp = camp_map.get(cid)
+            if not camp or camp["status"] != "paused":
+                auto_paused.discard(cid)
                 changed = True
 
         if changed:

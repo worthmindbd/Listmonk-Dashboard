@@ -209,16 +209,6 @@ const Analytics = {
         if (this.selectedCampaignId) {
             this.loadCampaignAnalytics();
         }
-    },    getThemeColors() {
-        const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-        return {
-            isDark,
-            textColor: isDark ? '#94a3b8' : '#64748d',
-            gridColor: isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(0, 55, 112, 0.06)',
-            tooltipBg: isDark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.95)',
-            tooltipText: isDark ? '#f8fafc' : '#0d253d',
-            tooltipBorder: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(227, 232, 238, 0.9)',
-        };
     },
 
     renderComparisonChart() {

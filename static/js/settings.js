@@ -350,14 +350,14 @@ const Settings = {
         try {
             const result = await API.post('/api/auto-unblock/run');
             if (result.error) {
-                resultEl.innerHTML = `<div class="badge badge-danger" style="padding:8px 14px">${result.error}</div>`;
+                resultEl.innerHTML = `<div class="badge badge-danger" style="padding:8px 14px">${App.escapeHtml(result.error)}</div>`;
             } else if (result.success === 0 && result.failed === 0) {
                 resultEl.innerHTML = '<div class="badge badge-success" style="padding:8px 14px">No blocklisted engaged subscribers found - all clear!</div>';
             } else {
                 let html = `<div class="badge badge-success" style="padding:8px 14px">${result.success} unblocked, ${result.failed} failed</div>`;
                 if (result.unblocked?.length) {
                     html += '<div style="margin-top:12px;font-size:0.85rem;color:var(--text-secondary)">';
-                    html += '<strong>Unblocked:</strong> ' + result.unblocked.map(e => `<code>${e}</code>`).join(', ');
+                    html += '<strong>Unblocked:</strong> ' + result.unblocked.map(e => `<code>${App.escapeHtml(e)}</code>`).join(', ');
                     html += '</div>';
                 }
                 resultEl.innerHTML = html;

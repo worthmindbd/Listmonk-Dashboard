@@ -4,7 +4,9 @@ import logging
 from app.services.imap_unsubscribe import (
     get_stats, check_imap_status, scan_and_unsubscribe,
 )
-from app.services.unsubscribe_log import load_log, save_log, load_settings, save_settings
+from app.services.unsubscribe_log import (
+    load_log, save_log, load_settings, save_settings, _log_lock,
+)
 from app.services.link_unsubscribe import scan_link_unsubscribes
 from app.services.listmonk_client import listmonk
 from app.services.export_service import dict_list_to_csv
@@ -118,22 +120,24 @@ async def get_campaign_records(campaign_id: int, page: int = 1, per_page: int = 
 @router.delete("/campaign/{campaign_id}")
 async def delete_campaign_group(campaign_id: int):
     """Delete all unsubscribe records for a specific campaign by its ID."""
-    records = load_log()
-    before_count = len(records)
-    remaining = [r for r in records if r.get("campaign_id") != campaign_id]
-    removed = before_count - len(remaining)
-    save_log(remaining)
+    async with _log_lock:
+        records = load_log()
+        before_count = len(records)
+        remaining = [r for r in records if r.get("campaign_id") != campaign_id]
+        removed = before_count - len(remaining)
+        save_log(remaining)
     return {"removed": removed, "message": f"Removed {removed} record(s) from campaign {campaign_id}"}
 
 
 @router.delete("/records")
 async def delete_records(emails: list[str] = Query(default=[])):
     """Delete specific unsubscribe records by email."""
-    records = load_log()
-    before_count = len(records)
-    remaining = [r for r in records if r.get("email") not in emails]
-    removed = before_count - len(remaining)
-    save_log(remaining)
+    async with _log_lock:
+        records = load_log()
+        before_count = len(records)
+        remaining = [r for r in records if r.get("email") not in emails]
+        removed = before_count - len(remaining)
+        save_log(remaining)
     return {"removed": removed, "message": f"Removed {removed} record(s)"}
 
 
@@ -190,9 +194,10 @@ async def trigger_scan():
 @router.delete("/clear")
 async def clear_unsubscribes():
     """Clear all unsubscribe records to free storage."""
-    records = load_log()
-    count = len(records)
-    save_log([])
+    async with _log_lock:
+        records = load_log()
+        count = len(records)
+        save_log([])
     return {"cleared": count, "message": f"Removed {count} record(s)"}
 
 
@@ -211,6 +216,7 @@ async def reset_all_unsubscribes():
     failed = 0
     details = []
     failed_records = []
+    restored_keys = set()
 
     for r in records:
         sub_id = r.get("subscriber_id")
@@ -254,6 +260,7 @@ async def reset_all_unsubscribes():
                 })
 
             restored += 1
+            restored_keys.add((sub_id, email_addr))
             details.append(f"OK {email_addr}: enabled + re-added to lists {lists_removed}")
             logging.getLogger("unsubscribes").info(f"Restored: {email_addr} (lists: {lists_removed})")
 
@@ -264,8 +271,14 @@ async def reset_all_unsubscribes():
             logging.getLogger("unsubscribes").error(f"Reset failed: {email_addr}: {e}")
 
     # Only clear records that were successfully restored;
-    # failed records stay in the log for retry.
-    save_log(failed_records)
+    # failed records and newly arrived records stay in the log.
+    async with _log_lock:
+        fresh_records = load_log()
+        remaining_records = [
+            r for r in fresh_records
+            if (r.get("subscriber_id"), r.get("email", "unknown")) not in restored_keys
+        ]
+        save_log(remaining_records)
 
     return {
         "message": f"Reset complete: {restored} restored, {failed} failed (kept in log for retry)",

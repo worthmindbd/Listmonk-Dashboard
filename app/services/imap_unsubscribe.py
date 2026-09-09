@@ -248,7 +248,11 @@ def _reattribute_existing_records(
         ts = r.get("timestamp", "")
         try:
             rec_date = datetime.fromisoformat(ts) if ts else datetime.now(timezone.utc)
-        except ValueError:
+            if rec_date.tzinfo is None:
+                rec_date = rec_date.replace(tzinfo=timezone.utc)
+            else:
+                rec_date = rec_date.astimezone(timezone.utc)
+        except (ValueError, TypeError):
             rec_date = datetime.now(timezone.utc)
 
         new_match = _match_campaign(
@@ -369,7 +373,6 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                 logger.warning(f"[IMAP] No campaigns found, searching emails SINCE {since_str}")
 
             if status != "OK" or not msg_ids[0]:
-                conn.logout()
                 return {"scanned": 0, "matched": 0, "processed": 0, "errors": 0,
                         "message": "No emails found in inbox for the campaign period"}
 
@@ -435,7 +438,11 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     if date_str:
                         try:
                             from email.utils import parsedate_to_datetime
-                            email_date = parsedate_to_datetime(date_str)
+                            dt = parsedate_to_datetime(date_str)
+                            if dt.tzinfo is not None:
+                                email_date = dt.astimezone(timezone.utc)
+                            else:
+                                email_date = dt.replace(tzinfo=timezone.utc)
                         except Exception:
                             email_date = datetime.now(timezone.utc)
                     else:

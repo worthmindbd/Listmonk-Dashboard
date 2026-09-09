@@ -61,14 +61,14 @@ def detect_columns(file_bytes: bytes) -> dict:
     if not reader.fieldnames:
         return {"columns": [], "sample_rows": [], "encoding": encoding}
 
-    columns = [f.strip() for f in reader.fieldnames]
+    columns = [f.strip() for f in reader.fieldnames if f]
 
     # Read first 5 rows as sample
     sample_rows = []
     for i, row in enumerate(reader):
         if i >= 5:
             break
-        cleaned = {k.strip(): (v.strip() if v else "") for k, v in row.items()}
+        cleaned = {k.strip(): (v.strip() if isinstance(v, str) else ("" if v is None else str(v))) for k, v in row.items() if k}
         sample_rows.append(cleaned)
 
     return {
@@ -113,10 +113,10 @@ def convert_csv(
     if not reader.fieldnames:
         return {"csv_content": "", "stats": {"error": "No columns found in CSV"}}
 
-    reader.fieldnames = [f.strip() for f in reader.fieldnames]
+    reader.fieldnames = [f.strip() for f in reader.fieldnames if f]
 
     # Build case-insensitive column mapping
-    col_map = {f.strip().lower(): f for f in reader.fieldnames}
+    col_map = {f.strip().lower(): f for f in reader.fieldnames if f}
 
     # Validate email column
     actual_email = col_map.get(email_column.strip().lower())
@@ -151,7 +151,7 @@ def convert_csv(
     skipped = 0
 
     for row in reader:
-        row = {k.strip(): (v.strip() if v else "") for k, v in row.items()}
+        row = {k.strip(): (v.strip() if isinstance(v, str) else ("" if v is None else str(v))) for k, v in row.items() if k}
 
         email = row.get(actual_email, "").strip()
         if not email:

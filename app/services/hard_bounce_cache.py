@@ -31,7 +31,7 @@ async def update_hard_bounce_counts():
     try:
         logger.info("Updating hard bounce counts...")
         all_bounces = await listmonk.paginate_all(
-            listmonk.get_bounces, per_page=BATCH_SIZE,
+            listmonk.get_bounces, per_page=BATCH_SIZE, bounce_type="hard",
         )
         hard_bounces = [b for b in all_bounces if b.get("type") == "hard"]
         hard_bounces = await filter_bounces_excluding_openers(listmonk, hard_bounces)

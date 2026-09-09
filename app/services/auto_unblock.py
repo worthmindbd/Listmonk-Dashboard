@@ -36,8 +36,28 @@ async def find_blocklisted_clickers(client: ListMonkClient) -> list[dict]:
     return await find_blocklisted_engaged(client)
 
 
+async def delete_bounce_records_for_subscribers(client: ListMonkClient, subscriber_ids: list[int]) -> int:
+    """Delete all bounce records for the given subscriber IDs."""
+    deleted = 0
+    for sid in subscriber_ids:
+        try:
+            res = await client.get_subscriber_bounces(sid)
+            bounces = res.get("data", [])
+            for b in bounces:
+                bid = b.get("id")
+                if bid:
+                    try:
+                        await client.delete_bounce(bid)
+                        deleted += 1
+                    except Exception as e:
+                        logger.error(f"Failed to delete bounce {bid}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to fetch bounces for subscriber {sid}: {e}")
+    return deleted
+
+
 async def delete_bounce_records(client: ListMonkClient, emails: set[str]) -> int:
-    """Delete all bounce records for the given email addresses."""
+    """Delete all bounce records for the given email addresses (fallback)."""
     deleted = 0
     all_bounces = await client.paginate_all(client.get_bounces, per_page=500)
     bounce_ids_to_delete = [b["id"] for b in all_bounces if b.get("email") in emails]
@@ -57,6 +77,7 @@ async def unblock_subscribers(client: ListMonkClient, subscribers: list[dict]) -
     success = 0
     failed = 0
     unblocked = []
+    unblocked_ids = []
 
     # Step 1: Re-enable all subscribers
     for s in subscribers:
@@ -70,14 +91,15 @@ async def unblock_subscribers(client: ListMonkClient, subscribers: list[dict]) -
             })
             success += 1
             unblocked.append(s["email"])
+            unblocked_ids.append(s["id"])
             logger.info(f"Unblocked: {s['email']}")
         except Exception as e:
             failed += 1
             logger.error(f"Failed to unblock {s['email']}: {e}")
 
-    # Step 2: Delete bounce records for unblocked emails
-    if unblocked:
-        bounces_deleted = await delete_bounce_records(client, set(unblocked))
+    # Step 2: Delete bounce records for unblocked subscribers
+    if unblocked_ids:
+        bounces_deleted = await delete_bounce_records_for_subscribers(client, unblocked_ids)
         logger.info(f"Deleted {bounces_deleted} bounce records")
     else:
         bounces_deleted = 0

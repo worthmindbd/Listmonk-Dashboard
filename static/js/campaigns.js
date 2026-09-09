@@ -356,7 +356,7 @@ const Campaigns = {
                 <div style="margin-bottom:12px">
                     <button class="btn btn-secondary" onclick="Campaigns.showDetail(${id})">Back to Campaign</button>
                 </div>
-                <iframe class="preview-frame" srcdoc="${App.escapeHtml(result.html)}"></iframe>
+                <iframe class="preview-frame" sandbox="" srcdoc="${App.escapeHtml(result.html)}"></iframe>
             `);
         } catch {
             App.toast('Failed to load preview', 'error');
