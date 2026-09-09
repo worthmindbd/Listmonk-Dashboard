@@ -131,12 +131,14 @@ def verify_session(request: Request) -> bool:
     return True
 
 
-def clear_session(response: Response):
+def clear_session(response: Response, request: Optional[Request] = None):
     """Remove the session cookie."""
+    is_secure = _is_secure_cookie(request)
     response.delete_cookie(
         COOKIE_NAME,
         httponly=True,
         samesite="lax",
+        secure=is_secure,
         path="/",
     )
 

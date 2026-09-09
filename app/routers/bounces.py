@@ -32,9 +32,6 @@ async def ingest_bounces():
 async def get_bounces(page: int = 1, per_page: int = 50,
                       campaign_id: Optional[int] = None, source: str = "",
                       bounce_type: str = ""):
-    if not bounce_type:
-        return await listmonk.get_bounces(page, per_page, campaign_id, source)
-
     return await fetch_filtered_bounces_page(
         listmonk, page, per_page, bounce_type, campaign_id, source,
     )

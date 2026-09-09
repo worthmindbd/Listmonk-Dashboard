@@ -24,7 +24,7 @@ const Dashboard = {
             // Fetch all data in parallel
             const [listsRes, campaignsRes, subscribersRes] = await Promise.allSettled([
                 API.get('/api/lists?per_page=1&minimal=true'),
-                API.get('/api/campaigns?per_page=1'),
+                API.get('/api/campaigns?per_page=10&order_by=created_at&order=DESC'),
                 API.get('/api/subscribers?per_page=1'),
             ]);
 

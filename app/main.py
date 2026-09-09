@@ -107,6 +107,7 @@ async def bounce_ingest_loop():
                     f"Bounce ingest: {result['ingested']} ingested "
                     f"(hard={result.get('hard', 0)}, soft={result.get('soft', 0)})"
                 )
+                asyncio.create_task(update_hard_bounce_counts())
         except Exception as e:
             logger.error(f"Bounce ingest error: {e}")
         await asyncio.sleep(BOUNCE_INGEST_INTERVAL)
@@ -185,9 +186,9 @@ async def login(request: Request):
 
 
 @app.get("/auth/logout")
-async def logout():
+async def logout(request: Request):
     response = RedirectResponse("/auth/login", status_code=302)
-    clear_session(response)
+    clear_session(response, request)
     return response
 
 
@@ -247,7 +248,15 @@ async def get_schedule():
 
 @app.put("/api/scheduler")
 async def update_schedule(data: dict):
-    valid_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+    day_abbr_map = {
+        "mon": "mon", "monday": "mon",
+        "tue": "tue", "tuesday": "tue",
+        "wed": "wed", "wednesday": "wed",
+        "thu": "thu", "thursday": "thu",
+        "fri": "fri", "friday": "fri",
+        "sat": "sat", "saturday": "sat",
+        "sun": "sun", "sunday": "sun",
+    }
     if "timezone" in data:
         try:
             ZoneInfo(str(data["timezone"]))
@@ -269,10 +278,13 @@ async def update_schedule(data: dict):
     if "days" in data:
         if not isinstance(data["days"], list):
             raise HTTPException(status_code=400, detail="days must be a list of weekday names")
+        normalized_days = []
         for day in data["days"]:
-            if not isinstance(day, str) or day.lower() not in valid_days:
+            day_str = str(day).lower().strip()
+            if day_str not in day_abbr_map:
                 raise HTTPException(status_code=400, detail=f"Invalid day in days list: {day}")
-        data["days"] = [d.lower() for d in data["days"]]
+            normalized_days.append(day_abbr_map[day_str])
+        data["days"] = normalized_days
 
     schedule = load_schedule()
     for key in ["enabled", "timezone", "start_hour", "start_minute",

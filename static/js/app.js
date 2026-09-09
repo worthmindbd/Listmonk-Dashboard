@@ -53,6 +53,8 @@ const App = {
         // Clear per-page state when navigating away
         if (hash !== 'bounces' && typeof Bounces !== 'undefined') {
             Bounces.campaigns = [];
+            Bounces.campaignFilter = 0;
+            Bounces.page = 1;
         }
 
         // Update nav
@@ -434,6 +436,7 @@ const Templates = {
 const Bounces = {
     page: 1,
     campaignFilter: 0,
+    typeFilter: 'hard',
     campaigns: [],
     total: 0,
     perPage: 25,
@@ -442,16 +445,22 @@ const Bounces = {
         const params = new URLSearchParams({
             page: String(this.page),
             per_page: String(this.perPage),
-            bounce_type: 'hard',
         });
+        if (this.typeFilter) params.set('bounce_type', this.typeFilter);
         if (this.campaignFilter) params.set('campaign_id', String(this.campaignFilter));
         return params.toString();
+    },
+
+    _typeLabel() {
+        if (this.typeFilter === 'hard') return 'hard bounces';
+        if (this.typeFilter === 'soft') return 'soft bounces';
+        return 'bounces';
     },
 
     async render() {
         try {
             const fetchCampaigns = !this.campaigns.length
-                ? API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC')
+                ? API.get('/api/campaigns?per_page=500&order_by=created_at&order=DESC')
                 : Promise.resolve(null);
 
             const [campRes, bounceRes] = await Promise.all([
@@ -474,20 +483,29 @@ const Bounces = {
                 ? this.campaigns.find(c => c.id === this.campaignFilter)?.name || `#${this.campaignFilter}`
                 : 'All campaigns';
 
+            const deleteActionLabel = this.campaignFilter
+                ? `Delete ${this._typeLabel()}`
+                : `Delete All ${this.typeFilter ? (this.typeFilter === 'hard' ? 'Hard ' : 'Soft ') : ''}Bounces`;
+
             App.setActions(`
                 <button class="btn btn-sm btn-primary" onclick="Bounces.ingestBounces()">Ingest New Bounces</button>
                 <button class="btn btn-sm" onclick="Bounces.exportBounces()">Export CSV</button>
-                <button class="btn btn-sm btn-danger" onclick="Bounces.deleteAll()">Delete All Bounces</button>
+                <button class="btn btn-sm btn-danger" onclick="Bounces.deleteAll()">${deleteActionLabel}</button>
             `);
 
             let html = `
                 <div class="search-bar">
-                    <select id="bounceCampFilter" onchange="Bounces.filterCampaign(this.value)" style="width:auto;min-width:250px">
+                    <select id="bounceCampFilter" onchange="Bounces.filterCampaign(this.value)" style="width:auto;min-width:240px">
                         <option value="0" ${!this.campaignFilter ? 'selected' : ''}>All Campaigns</option>
                         ${campOptions}
                     </select>
+                    <select id="bounceTypeFilter" onchange="Bounces.filterType(this.value)" style="width:auto">
+                        <option value="hard" ${this.typeFilter === 'hard' ? 'selected' : ''}>Hard Bounces</option>
+                        <option value="soft" ${this.typeFilter === 'soft' ? 'selected' : ''}>Soft Bounces</option>
+                        <option value="" ${!this.typeFilter ? 'selected' : ''}>All Bounce Types</option>
+                    </select>
                     <span style="color:var(--text-secondary);font-size:0.9rem">
-                        ${App.formatNumber(total)} hard bounces
+                        ${App.formatNumber(total)} ${this._typeLabel()}
                         ${this.campaignFilter ? ' for ' + filterLabel : ''}
                     </span>
                     <div style="flex:1"></div>
@@ -498,7 +516,7 @@ const Bounces = {
                     </tr></thead><tbody>`;
 
             if (!pageBounces.length) {
-                html += '<tr><td colspan="7"><div class="empty-state"><h3>No hard bounces found</h3></div></td></tr>';
+                html += `<tr><td colspan="7"><div class="empty-state"><h3>No ${this._typeLabel()} found</h3></div></td></tr>`;
             }
             pageBounces.forEach(b => {
                 const campName = App.escapeHtml(b.campaign?.name || '-');
@@ -527,6 +545,12 @@ const Bounces = {
         this.render();
     },
 
+    filterType(val) {
+        this.typeFilter = val || '';
+        this.page = 1;
+        this.render();
+    },
+
     goToPage(p) { this.page = p; this.render(); },
 
     async remove(id) {
@@ -550,13 +574,15 @@ const Bounces = {
     },
 
     async deleteAll() {
+        const typeDesc = this.typeFilter ? `${this.typeFilter} ` : '';
         const label = this.campaignFilter
-            ? `hard bounces for "${this._campaignLabel()}"`
-            : 'ALL hard bounce records';
+            ? `${typeDesc}bounces for "${this._campaignLabel()}"`
+            : `ALL ${typeDesc}bounce records`;
         if (!await App.confirm('Delete Bounces', `This will permanently delete ${label}. Continue?`)) return;
         App.showProgress('Delete Bounces', `Deleting ${label}. Please wait...`);
         try {
-            const params = new URLSearchParams({ bounce_type: 'hard' });
+            const params = new URLSearchParams();
+            if (this.typeFilter) params.set('bounce_type', this.typeFilter);
             if (this.campaignFilter) params.set('campaign_id', String(this.campaignFilter));
             const result = await API.del(`/api/bounces?${params}`);
             const deleted = result?.deleted ?? 0;
@@ -577,16 +603,18 @@ const Bounces = {
     async exportBounces() {
         App.showProgress('Export Bounces', 'Preparing export...');
         try {
-            const params = new URLSearchParams({ bounce_type: 'hard' });
+            const params = new URLSearchParams();
+            if (this.typeFilter) params.set('bounce_type', this.typeFilter);
             if (this.campaignFilter) params.set('campaign_id', String(this.campaignFilter));
             const result = await API.get(`/api/bounces/export?${params}`);
             if (!result.blob) {
-                App.showResult('Export Bounces', '<p>No hard bounces to export.</p>');
+                App.showResult('Export Bounces', `<p>No ${this._typeLabel()} to export.</p>`);
                 return;
             }
+            const typeSuffix = this.typeFilter ? `_${this.typeFilter}` : '';
             const suffix = this.campaignFilter
-                ? `_${this.campaigns.find(c => c.id === this.campaignFilter)?.name?.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) || this.campaignFilter}`
-                : '_hard';
+                ? `_${this.campaigns.find(c => c.id === this.campaignFilter)?.name?.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) || this.campaignFilter}${typeSuffix}`
+                : (typeSuffix || '_all');
             API.downloadBlob(result.blob, `bounces${suffix}.csv`);
             App.toast('Bounces exported', 'success');
             App.closeModal();

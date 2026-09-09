@@ -98,3 +98,23 @@ def test_atomic_save_schedule(tmp_path, monkeypatch):
     assert loaded["enabled"] is True
     assert loaded["start_hour"] == 10
     assert loaded["auto_paused_campaigns"] == [123]
+
+
+@pytest.mark.asyncio
+async def test_update_schedule_endpoint_normalizes_days(tmp_path, monkeypatch):
+    import app.services.campaign_scheduler as sched_module
+    from app.main import update_schedule
+
+    sched_file = tmp_path / "schedule.json"
+    monkeypatch.setattr(sched_module, "SCHEDULE_FILE", sched_file)
+    monkeypatch.setattr("app.main.load_schedule", sched_module.load_schedule)
+    monkeypatch.setattr("app.main.save_schedule", sched_module.save_schedule)
+
+    # Test that 3-letter abbreviations sent from frontend are accepted
+    data = {
+        "enabled": False,
+        "days": ["mon", "WED", "Friday"],
+    }
+    result = await update_schedule(data)
+    assert result["status"] == "ok"
+    assert result["schedule"]["days"] == ["mon", "wed", "fri"]

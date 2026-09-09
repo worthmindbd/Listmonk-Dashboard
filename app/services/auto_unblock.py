@@ -101,6 +101,9 @@ async def unblock_subscribers(client: ListMonkClient, subscribers: list[dict]) -
     if unblocked_ids:
         bounces_deleted = await delete_bounce_records_for_subscribers(client, unblocked_ids)
         logger.info(f"Deleted {bounces_deleted} bounce records")
+        if bounces_deleted > 0:
+            from app.services.hard_bounce_cache import update_hard_bounce_counts
+            asyncio.create_task(update_hard_bounce_counts())
     else:
         bounces_deleted = 0
 

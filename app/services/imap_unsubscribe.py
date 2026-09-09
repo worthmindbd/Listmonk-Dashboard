@@ -157,9 +157,15 @@ def _match_campaign(
         if not created:
             continue
         try:
-            camp_date = datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
+            clean_iso = created.replace("Z", "+00:00")
+            camp_date = datetime.fromisoformat(clean_iso)
+            if camp_date.tzinfo is None:
+                camp_date = camp_date.replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
-            continue
+            try:
+                camp_date = datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
 
         if camp_date > email_date:
             continue
