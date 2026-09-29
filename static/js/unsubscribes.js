@@ -91,7 +91,7 @@ const Unsubscribes = {
         } else if (imap.connected) {
             imapBadge = '<span class="badge badge-success" style="font-size:0.85rem;padding:6px 14px">IMAP Connected</span>';
         } else {
-            imapBadge = `<span class="badge badge-danger" style="font-size:0.85rem;padding:6px 14px">IMAP Error: ${imap.error || 'Unknown'}</span>`;
+            imapBadge = `<span class="badge badge-danger" style="font-size:0.85rem;padding:6px 14px">IMAP Error: ${App.escapeHtml(imap.error || 'Unknown')}</span>`;
         }
 
         // Top bar actions

@@ -5,17 +5,21 @@ removes from all lists and optionally blocklists. Records in the shared
 unsubscribe_log.json with source="link".
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
 from app.services.listmonk_client import ListMonkClient
 from app.services.unsubscribe_log import (
-    load_log, save_log, append_log, load_settings, _log_lock,
+    append_log, load_settings, load_processed_emails, mark_processed,
 )
 
 logger = logging.getLogger("link_unsubscribe")
 
 PER_PAGE = 100  # Patchable in tests
+MAX_PAGES_PER_LIST = 500  # Safety cap: 50k subscribers per list
+
+_link_scan_lock = asyncio.Lock()
 
 
 def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
@@ -84,12 +88,23 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
     cascades to all their lists), they are attributed to the most recent
     campaign targeting any of those lists — not to whichever list is scanned
     first.
+
+    Serialized with a module lock so a manual scan and the hourly background
+    scan cannot process (and log) the same subscribers twice.
     """
+    if _link_scan_lock.locked():
+        return {"scanned_lists": 0, "new_found": 0, "processed": 0, "errors": 0,
+                "message": "Link scan already in progress"}
+
+    async with _link_scan_lock:
+        return await _scan_link_unsubscribes_impl(client)
+
+
+async def _scan_link_unsubscribes_impl(client: ListMonkClient) -> dict:
     scanned_lists = 0
     errors = 0
 
-    existing_log = load_log()
-    processed_emails = {r["email"] for r in existing_log}
+    processed_emails = load_processed_emails()
 
     scan_settings = load_settings()
     blocklist_enabled = scan_settings.get("blocklist_enabled", False)
@@ -137,6 +152,12 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
                 entry["unsub_list_ids"].add(list_id)
 
             if len(subscribers) < PER_PAGE:
+                break
+            if page >= MAX_PAGES_PER_LIST:
+                logger.warning(
+                    f"[LINK] Pagination cap reached for list {list_id}; "
+                    f"remaining subscribers will be picked up next scan"
+                )
                 break
             page += 1
 
@@ -211,6 +232,7 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
 
     if new_records:
         await append_log(new_records)
+        await mark_processed(r["email"] for r in new_records)
 
     return {
         "scanned_lists": scanned_lists,

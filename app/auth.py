@@ -25,6 +25,40 @@ SESSION_MAX_AGE = 7 * 24 * 60 * 60
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# Login rate limiting (in-memory, per client IP)
+LOGIN_MAX_ATTEMPTS = 10
+LOGIN_WINDOW_SECONDS = 15 * 60
+_MAX_TRACKED_IPS = 10_000
+_login_failures: dict[str, list[float]] = {}
+
+
+def is_login_rate_limited(ip: str) -> bool:
+    """True if this IP has too many recent failed login attempts."""
+    now = time.time()
+    attempts = [t for t in _login_failures.get(ip, []) if now - t < LOGIN_WINDOW_SECONDS]
+    if attempts:
+        _login_failures[ip] = attempts
+    return len(attempts) >= LOGIN_MAX_ATTEMPTS
+
+
+def record_login_failure(ip: str) -> None:
+    """Record a failed login attempt for an IP (bounded memory)."""
+    if len(_login_failures) >= _MAX_TRACKED_IPS:
+        now = time.time()
+        for tracked_ip in list(_login_failures):
+            attempts = [t for t in _login_failures[tracked_ip] if now - t < LOGIN_WINDOW_SECONDS]
+            if attempts:
+                _login_failures[tracked_ip] = attempts
+            else:
+                _login_failures.pop(tracked_ip, None)
+        if len(_login_failures) >= _MAX_TRACKED_IPS:
+            _login_failures.clear()
+    _login_failures.setdefault(ip, []).append(time.time())
+
+
+def clear_login_failures(ip: str) -> None:
+    _login_failures.pop(ip, None)
+
 
 def _load_or_create_secret_key() -> str:
     """Load SESSION_SECRET from env, persisted key file in DATA_DIR, or generate a new one."""
@@ -34,6 +68,10 @@ def _load_or_create_secret_key() -> str:
 
     key_file = settings.data_path("session_secret.key")
     if key_file.exists():
+        try:
+            key_file.chmod(0o600)
+        except OSError:
+            pass
         try:
             persisted = key_file.read_text(encoding="utf-8").strip()
             if persisted:
@@ -47,6 +85,10 @@ def _load_or_create_secret_key() -> str:
     # Persist to DATA_DIR so sessions survive restarts across Docker & dev
     try:
         key_file.write_text(key, encoding="utf-8")
+        try:
+            key_file.chmod(0o600)
+        except OSError:
+            pass
         os.environ["SESSION_SECRET"] = key
         logger.info("Generated and persisted SESSION_SECRET to %s", key_file)
         return key

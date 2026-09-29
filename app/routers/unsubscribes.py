@@ -5,7 +5,8 @@ from app.services.imap_unsubscribe import (
     get_stats, check_imap_status, scan_and_unsubscribe,
 )
 from app.services.unsubscribe_log import (
-    load_log, save_log, load_settings, save_settings, _log_lock,
+    load_log, save_log, load_settings, save_settings,
+    unmark_processed, _log_lock,
 )
 from app.services.link_unsubscribe import scan_link_unsubscribes
 from app.services.listmonk_client import listmonk
@@ -23,7 +24,14 @@ async def get_unsub_settings():
 @router.put("/settings")
 async def update_unsub_settings(request: Request):
     """Update unsubscribe scanner settings (e.g., blocklist toggle)."""
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Settings must be a JSON object")
+    if "blocklist_enabled" in data and not isinstance(data["blocklist_enabled"], bool):
+        raise HTTPException(status_code=400, detail="blocklist_enabled must be a boolean")
     save_settings(data)
     return load_settings()
 
@@ -60,7 +68,7 @@ async def get_unsubscribe_stats(campaign_id: int = 0):
 @router.get("/imap-status")
 async def get_imap_status():
     """Check if IMAP is configured and can connect."""
-    return check_imap_status()
+    return await check_imap_status()
 
 
 @router.get("/campaigns")
@@ -279,6 +287,13 @@ async def reset_all_unsubscribes():
             if (r.get("subscriber_id"), r.get("email", "unknown")) not in restored_keys
         ]
         save_log(remaining_records)
+
+    # Allow future unsubscribes from restored subscribers to be detected again.
+    # (The suppressed-email set is intentionally NOT cleared when log records
+    # are merely deleted — otherwise the scanners would re-handle them.)
+    restored_emails = [email for _, email in restored_keys]
+    if restored_emails:
+        await unmark_processed(restored_emails)
 
     return {
         "message": f"Reset complete: {restored} restored, {failed} failed (kept in log for retry)",

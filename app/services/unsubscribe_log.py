@@ -16,6 +16,10 @@ from app.config import settings
 
 LOG_FILE = settings.data_path("unsubscribe_log.json")
 SETTINGS_FILE = settings.data_path("unsubscribe_settings.json")
+# Authoritative dedup source for the scanners, kept independent of the display
+# log so that deleting/clearing log records does not cause already-handled
+# subscribers to be processed (and re-unsubscribed) again.
+PROCESSED_FILE = settings.data_path("unsubscribe_processed.json")
 
 _DEFAULT_SETTINGS = {
     "blocklist_enabled": False,
@@ -81,6 +85,48 @@ async def append_log(new_records: list[dict]) -> None:
         existing = load_log()
         existing.extend(new_records)
         save_log(existing)
+
+
+def load_processed_emails() -> set[str]:
+    """Return lowercased emails of subscribers already handled by a scanner.
+
+    Seeded from the existing log on first run so previously processed records
+    are not handled twice after this file is introduced.
+    """
+    try:
+        data = json.loads(PROCESSED_FILE.read_text())
+        if isinstance(data, list):
+            return {str(e).lower() for e in data if e}
+    except (FileNotFoundError, json.JSONDecodeError, IsADirectoryError, PermissionError):
+        pass
+
+    seeded = {r["email"].lower() for r in load_log() if r.get("email")}
+    if seeded:
+        try:
+            save_processed_emails(seeded)
+        except OSError:
+            pass
+    return seeded
+
+
+def save_processed_emails(emails: set[str]) -> None:
+    _atomic_write_json(PROCESSED_FILE, sorted(emails), indent=None, ensure_ascii=True)
+
+
+async def mark_processed(emails) -> None:
+    """Persist emails as handled (union with the existing set)."""
+    async with _log_lock:
+        current = load_processed_emails()
+        current.update(str(e).lower() for e in emails if e)
+        save_processed_emails(current)
+
+
+async def unmark_processed(emails) -> None:
+    """Remove emails from the handled set so a future unsubscribe is detected."""
+    async with _log_lock:
+        current = load_processed_emails()
+        current.difference_update(str(e).lower() for e in emails if e)
+        save_processed_emails(current)
 
 
 def load_settings() -> dict:

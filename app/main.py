@@ -25,7 +25,11 @@ from app.services.imap_unsubscribe import scan_and_unsubscribe
 from app.services.link_unsubscribe import scan_link_unsubscribes
 from app.services.bounce_ingest import ingest_bounce_mailbox
 from app.services.hard_bounce_cache import start_cache_updater, update_hard_bounce_counts
-from app.auth import verify_session, create_session, clear_session, check_credentials
+from app.auth import (
+    verify_session, create_session, clear_session, check_credentials,
+    is_login_rate_limited, record_login_failure, clear_login_failures,
+)
+from app.services.task_utils import spawn, shutdown as shutdown_tasks
 from app.routers import subscribers, lists, campaigns, templates, bounces, converter, unsubscribes
 
 logger = logging.getLogger("listmonk-dashboard")
@@ -42,6 +46,17 @@ _hard_bounce_cache_task = None
 
 
 # ── Auth Middleware ───────────────────────────────────────
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Attach baseline security headers to every response."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        return response
+
 
 class AuthMiddleware(BaseHTTPMiddleware):
     """Protect all routes except login and static files."""
@@ -107,7 +122,7 @@ async def bounce_ingest_loop():
                     f"Bounce ingest: {result['ingested']} ingested "
                     f"(hard={result.get('hard', 0)}, soft={result.get('soft', 0)})"
                 )
-                asyncio.create_task(update_hard_bounce_counts())
+                spawn(update_hard_bounce_counts())
         except Exception as e:
             logger.error(f"Bounce ingest error: {e}")
         await asyncio.sleep(BOUNCE_INGEST_INTERVAL)
@@ -124,11 +139,15 @@ async def lifespan(app: FastAPI):
     _hard_bounce_cache_task = asyncio.create_task(start_cache_updater())
     logger.info("Background tasks started: auto-unblock (6h), campaign scheduler (60s), IMAP+link scan (1h), bounce ingest (1h), hard bounce cache (5min)")
     yield
-    _auto_unblock_task.cancel()
-    _scheduler_task.cancel()
-    _imap_scan_task.cancel()
-    _bounce_ingest_task.cancel()
-    _hard_bounce_cache_task.cancel()
+    loop_tasks = [
+        _auto_unblock_task, _scheduler_task, _imap_scan_task,
+        _bounce_ingest_task, _hard_bounce_cache_task,
+    ]
+    for task in loop_tasks:
+        task.cancel()
+    await asyncio.gather(*loop_tasks, return_exceptions=True)
+    # Also drain helper tasks spawned via task_utils.spawn().
+    await shutdown_tasks()
     await listmonk.close()
 
 
@@ -136,6 +155,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ListMonk Dashboard", lifespan=lifespan)
 app.add_middleware(AuthMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 @app.exception_handler(httpx.HTTPStatusError)
@@ -173,13 +193,28 @@ async def login_page(request: Request):
 
 @app.post("/auth/login")
 async def login(request: Request):
-    data = await request.json()
+    client_ip = request.client.host if request.client else "unknown"
+    if is_login_rate_limited(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts. Please try again later.",
+        )
+
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Invalid request body")
+
     username = data.get("username", "")
     password = data.get("password", "")
 
     if not check_credentials(username, password):
+        record_login_failure(client_ip)
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
+    clear_login_failures(client_ip)
     response = JSONResponse({"status": "ok"})
     create_session(response, request)
     return response
@@ -266,13 +301,13 @@ async def update_schedule(data: dict):
     for hour_key in ["start_hour", "end_hour"]:
         if hour_key in data:
             val = data[hour_key]
-            if not isinstance(val, int) or val < 0 or val > 23:
+            if isinstance(val, bool) or not isinstance(val, int) or val < 0 or val > 23:
                 raise HTTPException(status_code=400, detail=f"{hour_key} must be an integer between 0 and 23")
 
     for min_key in ["start_minute", "end_minute"]:
         if min_key in data:
             val = data[min_key]
-            if not isinstance(val, int) or val < 0 or val > 59:
+            if isinstance(val, bool) or not isinstance(val, int) or val < 0 or val > 59:
                 raise HTTPException(status_code=400, detail=f"{min_key} must be an integer between 0 and 59")
 
     if "days" in data:

@@ -18,7 +18,6 @@ jobs:
             set -euo pipefail
             cd /root/Listmonk-Dashboard
             git fetch origin main
-            git clean -fd
             git reset --hard origin/main
             docker compose up -d --build
             for i in $(seq 1 15); do
@@ -33,7 +32,6 @@ jobs:
 
             cd /root/Listmonk-Dashboard-2
             git fetch origin main
-            git clean -fd
             git reset --hard origin/main
             docker compose -f docker-compose.yml -f docker-compose.instance2.yml up -d --build
             for i in $(seq 1 15); do

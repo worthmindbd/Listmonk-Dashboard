@@ -258,7 +258,7 @@ const App = {
             'draft': 'info', 'scheduled': 'warning', 'paused': 'warning',
         };
         const cls = map[status] || 'default';
-        return `<span class="badge badge-${cls}">${status}</span>`;
+        return `<span class="badge badge-${cls}">${this.escapeHtml(status)}</span>`;
     },
 
     // ── Format Date ──────────────────────────────────────
@@ -381,7 +381,7 @@ const Templates = {
         App.setContent(`
             <div class="inline-form">
                 <h3 style="margin-bottom:16px">Edit Template #${t.id}</h3>
-                <div class="form-group"><label>Name</label><input type="text" id="editTplName" value="${(t.name || '').replace(/"/g, '&quot;')}"></div>
+                <div class="form-group"><label>Name</label><input type="text" id="editTplName" value="${App.escapeHtml(t.name || '')}"></div>
                 <div class="form-group"><label>Body (HTML)</label><textarea id="editTplBody" rows="15">${App.escapeHtml(t.body || '')}</textarea></div>
                 <div class="form-actions">
                     <button class="btn btn-primary" onclick="Templates.update(${t.id})">Update</button>

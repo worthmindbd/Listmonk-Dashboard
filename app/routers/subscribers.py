@@ -60,9 +60,17 @@ async def create_subscriber(data: dict):
     return await listmonk.create_subscriber(data)
 
 
+# NOTE: static routes like /lists and /blocklist MUST be registered before
+# /{subscriber_id}, otherwise Starlette matches the parameterized route first
+# and int-parses "lists"/"blocklist" (422), making the endpoints unreachable.
 @router.put("/lists")
 async def modify_list_memberships(data: dict):
     return await listmonk.modify_list_memberships(data)
+
+
+@router.put("/blocklist")
+async def blocklist_subscribers(data: dict):
+    return await listmonk.blocklist_subscribers(data.get("ids", []))
 
 
 @router.put("/{subscriber_id}")
@@ -73,11 +81,6 @@ async def update_subscriber(subscriber_id: int, data: dict):
 @router.put("/{subscriber_id}/blocklist")
 async def blocklist_subscriber(subscriber_id: int):
     return await listmonk.blocklist_subscriber(subscriber_id)
-
-
-@router.put("/blocklist")
-async def blocklist_subscribers(data: dict):
-    return await listmonk.blocklist_subscribers(data.get("ids", []))
 
 
 @router.delete("/{subscriber_id}")

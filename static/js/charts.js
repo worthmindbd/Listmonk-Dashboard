@@ -4,6 +4,7 @@
 const Dashboard = {
     charts: {},
     campaignsData: [],
+    summary: null,
 
     getThemeColors() {
         const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
@@ -22,15 +23,20 @@ const Dashboard = {
 
         try {
             // Fetch all data in parallel
-            const [listsRes, campaignsRes, subscribersRes] = await Promise.allSettled([
+            const [listsRes, campaignsRes, subscribersRes, summaryRes] = await Promise.allSettled([
                 API.get('/api/lists?per_page=1&minimal=true'),
                 API.get('/api/campaigns?per_page=10&order_by=created_at&order=DESC'),
                 API.get('/api/subscribers?per_page=1'),
+                API.get('/api/campaigns/summary'),
             ]);
 
+            this.summary = summaryRes.status === 'fulfilled' ? (summaryRes.value || null) : null;
             const totalLists = listsRes.status === 'fulfilled' ? (listsRes.value?.data?.total || 0) : 0;
-            const totalCampaigns = campaignsRes.status === 'fulfilled' ? (campaignsRes.value?.data?.total || 0) : 0;
+            const totalCampaigns = this.summary?.total_campaigns
+                ?? (campaignsRes.status === 'fulfilled' ? (campaignsRes.value?.data?.total || 0) : 0);
             const totalSubscribers = subscribersRes.status === 'fulfilled' ? (subscribersRes.value?.data?.total || 0) : 0;
+            const activeCampaigns = this.summary?.status_counts?.running
+                ?? null;
 
             // Get recent campaigns for chart data
             let campaigns = [];
@@ -55,7 +61,7 @@ const Dashboard = {
                     </div>
                     <div class="stat-card">
                         <div class="stat-label">Active Campaigns</div>
-                        <div class="stat-value">${App.formatNumber(campaigns.filter(c => c.status === 'running').length)}</div>
+                        <div class="stat-value">${App.formatNumber(activeCampaigns ?? campaigns.filter(c => c.status === 'running').length)}</div>
                     </div>
                 </div>
 
@@ -184,9 +190,13 @@ const Dashboard = {
 
         const theme = this.getThemeColors();
         const statusCounts = {};
-        (campaigns || this.campaignsData).forEach(c => {
-            statusCounts[c.status] = (statusCounts[c.status] || 0) + 1;
-        });
+        if (this.summary?.status_counts) {
+            Object.assign(statusCounts, this.summary.status_counts);
+        } else {
+            (campaigns || this.campaignsData).forEach(c => {
+                statusCounts[c.status] = (statusCounts[c.status] || 0) + 1;
+            });
+        }
 
         const colorMap = {
             draft: '#3b82f6',

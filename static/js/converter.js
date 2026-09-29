@@ -47,7 +47,7 @@ const Converter = {
                         <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
                     </svg>
                     <p>Drag & drop a CSV file here, or click to browse</p>
-                    <p class="file-name" id="fileName">${this.fileName || ''}</p>
+                    <p class="file-name" id="fileName">${App.escapeHtml(this.fileName || '')}</p>
                     <input type="file" id="csvFile" accept=".csv,.tsv,.txt" style="display:none">
                 </div>
                 <p style="margin-top:12px;font-size:0.85rem;color:var(--text-muted)">

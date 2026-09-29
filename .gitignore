@@ -18,6 +18,7 @@ schedule.json
 unsubscribe_log.json
 unsubscribe_log.json.bak
 unsubscribe_settings.json
+unsubscribe_processed.json
 blocklist_restore_backup.json
 *.bak
 uvicorn.log

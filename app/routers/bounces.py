@@ -8,6 +8,7 @@ from app.services.bounce_ingest import ingest_bounce_mailbox
 from app.services.bounce_list import fetch_all_filtered_bounces, fetch_filtered_bounces_page
 from app.services.export_service import dict_list_to_csv
 from app.services.hard_bounce_cache import update_hard_bounce_counts
+from app.services.task_utils import spawn
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ async def ingest_bounces():
     create matching bounce records in ListMonk."""
     try:
         result = await ingest_bounce_mailbox(listmonk)
-        asyncio.create_task(update_hard_bounce_counts())
+        spawn(update_hard_bounce_counts())
         return result
     except Exception as e:
         logger.error(f"bounce ingest failed: {e}", exc_info=True)
@@ -68,7 +69,7 @@ async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
 @router.delete("/{bounce_id}")
 async def delete_bounce(bounce_id: int):
     res = await listmonk.delete_bounce(bounce_id)
-    asyncio.create_task(update_hard_bounce_counts())
+    spawn(update_hard_bounce_counts())
     return res
 
 
@@ -80,7 +81,7 @@ async def delete_all_bounces(campaign_id: Optional[int] = None,
     without campaign_id, delete all matching bounces. Otherwise delete all."""
     if not campaign_id and not bounce_type:
         res = await listmonk.delete_all_bounces()
-        asyncio.create_task(update_hard_bounce_counts())
+        spawn(update_hard_bounce_counts())
         return res
 
     all_bounces = await fetch_all_filtered_bounces(
@@ -106,5 +107,5 @@ async def delete_all_bounces(campaign_id: Optional[int] = None,
                 logger.error(f"Failed to delete bounce {bid}: {exc}")
 
     await asyncio.gather(*(_delete(bid) for bid in bounce_ids))
-    asyncio.create_task(update_hard_bounce_counts())
+    spawn(update_hard_bounce_counts())
     return {"deleted": deleted, "errors": errors, "campaign_id": campaign_id}

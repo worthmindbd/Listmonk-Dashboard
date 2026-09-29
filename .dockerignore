@@ -11,6 +11,7 @@ schedule.json
 *.md
 unsubscribe_log.json*
 unsubscribe_settings.json
+unsubscribe_processed.json
 blocklist_restore_backup.json
 skills-lock.json
 tests/

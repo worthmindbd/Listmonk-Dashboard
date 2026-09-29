@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timezone
 from app.services.listmonk_client import ListMonkClient, listmonk as listmonk_singleton
 from app.config import settings
+from app.services.task_utils import spawn
 
 logger = logging.getLogger("auto_unblock")
 
@@ -103,7 +104,7 @@ async def unblock_subscribers(client: ListMonkClient, subscribers: list[dict]) -
         logger.info(f"Deleted {bounces_deleted} bounce records")
         if bounces_deleted > 0:
             from app.services.hard_bounce_cache import update_hard_bounce_counts
-            asyncio.create_task(update_hard_bounce_counts())
+            spawn(update_hard_bounce_counts())
     else:
         bounces_deleted = 0
 

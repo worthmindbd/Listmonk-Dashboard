@@ -221,6 +221,7 @@ ListMonk-Dashboard/
       link_unsubscribe.py      # ListMonk direct link unsubscribe scanner
       imap_helpers.py          # Shared IMAP & string escaping utilities
       unsubscribe_log.py       # Thread-safe persistent JSON state manager
+      task_utils.py            # Fire-and-forget task references & shutdown drain
   static/
     css/style.css              # Dark theme stylesheet
     js/
@@ -234,6 +235,7 @@ ListMonk-Dashboard/
       settings.js              # Settings UI (scheduler, auto-unblock, unsubscribe toggles)
       subscribers.js           # Subscriber management, search, edit modal, bulk actions
       unsubscribes.js          # Campaign-grouped unsubscribe view, source badges, undo/reset
+      vendor/chart.umd.min.js  # Vendored Chart.js 4.5.1 (no CDN dependency)
     favicon.png
     favicon.svg
   templates/
@@ -244,6 +246,7 @@ ListMonk-Dashboard/
     test_bounce_classify.py    # RFC 3463 bounce classifier tests
     test_bounce_filters.py     # Opener exclusion & false positive filter tests
     test_link_unsubscribe.py   # Link unsubscribe scanner & dedup tests
+    test_regressions.py        # Route order, IMAP seen-marking, prune, timestamp regressions
   .github/workflows/
     deploy.yml                 # Automated SSH deploy on push to main
   docker-compose.yml           # Primary instance compose definition
@@ -289,6 +292,7 @@ Once running, visit **http://localhost:8000/docs** for the interactive Swagger U
 | | `DELETE /api/lists/{id}` | DELETE | Delete mailing list |
 | **Campaigns** | `GET /api/campaigns` | GET | List all campaigns (with cached hard bounce count) |
 | | `GET /api/campaigns/running/stats` | GET | Real-time stats for running campaigns |
+| | `GET /api/campaigns/summary` | GET | Aggregate totals across all campaigns (cached 60s) |
 | | `GET /api/campaigns/export-all` | GET | Export all campaigns summary as CSV |
 | | `GET /api/campaigns/analytics/{type}` | GET | Campaign analytics (`views`, `clicks`, `bounces`, `links`) |
 | | `GET /api/campaigns/analytics/{type}/export` | GET | Export campaign analytics as CSV |

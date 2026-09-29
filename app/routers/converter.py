@@ -8,13 +8,31 @@ import io
 
 router = APIRouter()
 
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+async def _read_upload(file: UploadFile) -> bytes:
+    """Read an uploaded file, rejecting oversized payloads before buffering."""
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
+        )
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file uploaded")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
+        )
+    return content
+
 
 @router.post("/detect-columns")
 async def detect_csv_columns(file: UploadFile = File(...)):
     """Upload a CSV and detect its columns + preview rows."""
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Empty file uploaded")
+    content = await _read_upload(file)
     result = detect_columns(content)
     return result
 
@@ -27,9 +45,7 @@ async def convert_csv_file(
     attribute_columns: Optional[str] = Form(None),
 ):
     """Convert a CSV to ListMonk format and return as download."""
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Empty file uploaded")
+    content = await _read_upload(file)
 
     attrs = []
     if attribute_columns:
@@ -63,9 +79,7 @@ async def convert_and_import(
     mode: str = Form("subscribe"),
 ):
     """Convert CSV to ListMonk format and immediately import to ListMonk."""
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Empty file uploaded")
+    content = await _read_upload(file)
 
     attrs = []
     if attribute_columns:

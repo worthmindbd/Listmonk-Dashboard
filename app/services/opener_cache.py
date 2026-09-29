@@ -44,36 +44,44 @@ async def _fetch_opener_emails(client: ListMonkClient, campaign_id: int) -> set[
 async def get_opener_emails(
     client: ListMonkClient, campaign_id: int, *, force_refresh: bool = False,
 ) -> set[str]:
-    """Return cached opener emails for a campaign, refreshing after TTL."""
-    if not force_refresh and campaign_id in _cache:
-        age = time.monotonic() - _fetched_at.get(campaign_id, 0)
-        if age < TTL_SECONDS:
-            return _cache[campaign_id]
+    """Return cached opener emails for a campaign, refreshing after TTL.
 
+    The lock only guards the in-flight registry — the network fetch itself
+    runs outside it, so lookups for different campaigns do not serialize.
+    """
+    if not force_refresh and is_cached(campaign_id):
+        return _cache[campaign_id]
+
+    # Reuse an in-flight fetch instead of issuing a duplicate request.
     async with _lock:
-        if not force_refresh and campaign_id in _cache:
-            age = time.monotonic() - _fetched_at.get(campaign_id, 0)
-            if age < TTL_SECONDS:
-                return _cache[campaign_id]
+        task = _inflight.get(campaign_id)
+        if task is None:
+            task = asyncio.create_task(_fetch_opener_emails(client, campaign_id))
+            _inflight[campaign_id] = task
 
-        if campaign_id in _inflight:
-            return await _inflight[campaign_id]
-
-        task = asyncio.create_task(_fetch_opener_emails(client, campaign_id))
-        _inflight[campaign_id] = task
-        try:
-            return await task
-        finally:
-            _inflight.pop(campaign_id, None)
+    try:
+        return await task
+    finally:
+        async with _lock:
+            if _inflight.get(campaign_id) is task:
+                _inflight.pop(campaign_id, None)
 
 
 async def get_opener_emails_for_campaigns(
     client: ListMonkClient, campaign_ids: set[int],
+    concurrency: int = 10,
 ) -> dict[int, set[str]]:
-    opener_map: dict[int, set[str]] = {}
-    for cid in campaign_ids:
-        opener_map[cid] = await get_opener_emails(client, cid)
-    return opener_map
+    """Fetch opener sets for many campaigns with bounded concurrency."""
+    if not campaign_ids:
+        return {}
+    sem = asyncio.Semaphore(concurrency)
+
+    async def fetch(cid: int) -> tuple[int, set[str]]:
+        async with sem:
+            return cid, await get_opener_emails(client, cid)
+
+    pairs = await asyncio.gather(*(fetch(cid) for cid in campaign_ids))
+    return dict(pairs)
 
 
 def invalidate(campaign_id: int | None = None) -> None:

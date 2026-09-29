@@ -115,8 +115,16 @@ async def run_scheduler_tick(client: ListMonkClient):
     logger.debug(f"Scheduler tick: {now.strftime('%A %H:%M %Z')} | in_window={in_window} | auto_paused={auto_paused}")
 
     try:
-        # Get all campaigns across all pages
-        campaigns = await client.paginate_all(client.get_campaigns, per_page=100)
+        # Only running/paused campaigns are relevant: running ones may need
+        # pausing, and paused ones may need resuming. This avoids paginating
+        # the entire campaign history every 60 seconds.
+        campaigns = []
+        for status in ("running", "paused"):
+            campaigns.extend(
+                await client.paginate_all(
+                    client.get_campaigns, per_page=100, status=status,
+                )
+            )
 
         changed = False
 

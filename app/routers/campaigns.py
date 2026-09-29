@@ -1,4 +1,5 @@
 import json
+import time
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from typing import Optional
@@ -6,9 +7,22 @@ from app.services.listmonk_client import listmonk
 from app.services.export_service import dict_list_to_csv
 from app.services.bounce_filters import campaign_views_query
 from app.services.bounce_list import fetch_all_filtered_bounces, fetch_filtered_bounces_page
-from app.services.hard_bounce_cache import get_all_hard_bounce_counts
+from app.services.hard_bounce_cache import (
+    get_all_hard_bounce_counts, get_last_updated,
+)
 
 router = APIRouter()
+
+# Short-lived cache for the all-campaigns summary (paginates the entire
+# campaign history, so avoid repeating it on every dashboard/analytics load).
+_SUMMARY_TTL = 60
+_summary_cache: dict = {}
+_summary_cached_at = 0.0
+
+
+def _hard_counts_ready() -> bool:
+    """True once the hard-bounce cache has completed at least one refresh."""
+    return bool(get_last_updated())
 
 
 def _engagement_query(campaign_id: int, engagement_type: str) -> str | None:
@@ -25,10 +39,12 @@ async def get_campaigns(page: int = 1, per_page: int = 50,
     result = await listmonk.get_campaigns(page, per_page, query, status,
                                            order_by, order)
 
-    # Replace bounce counts with hard bounce counts from cache
+    # Replace bounce counts with hard bounce counts from cache. Only do this
+    # once the cache has been populated — otherwise raw (soft-inclusive)
+    # counts would be mixed with hard counts.
     campaigns = result.get("data", {}).get("results", [])
-    hard_counts = get_all_hard_bounce_counts()
-    if campaigns and hard_counts:
+    if campaigns and _hard_counts_ready():
+        hard_counts = get_all_hard_bounce_counts()
         for c in campaigns:
             cid = c.get("id")
             c["bounces"] = hard_counts.get(cid, 0)
@@ -77,8 +93,8 @@ async def export_all_campaigns():
     if not all_campaigns:
         raise HTTPException(status_code=404, detail="No campaigns found")
 
-    hard_counts = get_all_hard_bounce_counts()
-    if hard_counts:
+    if _hard_counts_ready():
+        hard_counts = get_all_hard_bounce_counts()
         for c in all_campaigns:
             cid = c.get("id")
             c["bounces"] = hard_counts.get(cid, 0)
@@ -90,6 +106,47 @@ async def export_all_campaigns():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=campaigns_export.csv"},
     )
+
+
+@router.get("/summary")
+async def get_campaigns_summary():
+    """Aggregate totals across ALL campaigns for dashboard/analytics cards.
+
+    Paginates the full campaign list, so the result is cached briefly.
+    """
+    global _summary_cache, _summary_cached_at
+    now = time.monotonic()
+    if _summary_cache and now - _summary_cached_at < _SUMMARY_TTL:
+        return _summary_cache
+
+    campaigns = await listmonk.paginate_all(listmonk.get_campaigns, per_page=100)
+
+    status_counts: dict[str, int] = {}
+    sent = views = clicks = 0
+    raw_bounces = 0
+    for c in campaigns:
+        status = c.get("status", "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        sent += c.get("sent") or 0
+        views += c.get("views") or 0
+        clicks += c.get("clicks") or 0
+        raw_bounces += c.get("bounces") or 0
+
+    if _hard_counts_ready():
+        bounces = sum(get_all_hard_bounce_counts().values())
+    else:
+        bounces = raw_bounces
+
+    _summary_cache = {
+        "total_campaigns": len(campaigns),
+        "status_counts": status_counts,
+        "sent": sent,
+        "views": views,
+        "clicks": clicks,
+        "bounces": bounces,
+    }
+    _summary_cached_at = now
+    return _summary_cache
 
 
 @router.get("/{campaign_id}/subscribers/{engagement_type}")
@@ -154,10 +211,10 @@ async def get_campaign(campaign_id: int):
     result = await listmonk.get_campaign(campaign_id)
 
     # Replace bounce count with hard-bounce cache (populated at startup
-    # and refreshed every 5 min).  Returns 0 when the campaign has no
-    # hard bounces or the initial cache update is still in progress.
+    # and refreshed every 5 min). Keeps ListMonk's raw count until the
+    # initial cache update completes.
     campaign = result.get("data", {})
-    if campaign:
+    if campaign and _hard_counts_ready():
         cached = get_all_hard_bounce_counts()
         campaign["bounces"] = cached.get(campaign_id, 0)
 
@@ -167,7 +224,15 @@ async def get_campaign(campaign_id: int):
 @router.get("/{campaign_id}/preview")
 async def preview_campaign(campaign_id: int):
     resp = await listmonk.preview_campaign(campaign_id)
-    return HTMLResponse(content=resp.text)
+    # The preview is untrusted HTML. Sandboxing (and nosniff) prevents it
+    # from executing scripts if opened directly in a browser tab.
+    return HTMLResponse(
+        content=resp.text,
+        headers={
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("")

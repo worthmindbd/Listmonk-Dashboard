@@ -37,7 +37,8 @@ Listmonk-Dashboard/
 │       ├── link_unsubscribe.py    # ListMonk direct link unsubscribe scanner & campaign attributor
 │       ├── listmonk_client.py     # Async HTTP client for ListMonk REST API (with paginate_all helper)
 │       ├── opener_cache.py        # In-memory campaign opener email cache with TTL & inflight deduplication
-│       └── unsubscribe_log.py     # Persistent JSON state management for unsubscribe log & settings
+│       ├── task_utils.py          # Strong references for fire-and-forget tasks & shutdown drain
+│       └── unsubscribe_log.py     # Persistent JSON state management for unsubscribe log/settings/processed
 ├── static/
 │   ├── css/
 │   │   └── style.css              # Dark theme CSS with custom variables & responsive design
@@ -62,7 +63,8 @@ Listmonk-Dashboard/
 │   ├── test_analytics.py          # Analytics endpoint & export tests
 │   ├── test_bounce_classify.py    # RFC 3463 bounce classifier unit tests
 │   ├── test_bounce_filters.py     # Opener exclusion & false positive filter tests
-│   └── test_link_unsubscribe.py   # Link unsubscribe scanner & dedup tests
+│   ├── test_link_unsubscribe.py   # Link unsubscribe scanner & dedup tests
+│   └── test_regressions.py        # Route order, IMAP seen-marking, prune, timestamp regressions
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml             # SSH automated deploy for multi-instance VPS
@@ -87,8 +89,8 @@ Listmonk-Dashboard/
 ## Technology Stack
 
 - **Backend**: Python 3.12+, FastAPI 0.141+, Uvicorn, httpx (async HTTP), Jinja2, Python-dotenv
-- **Frontend**: Vanilla JavaScript (ES6+), Chart.js (CDN), Modern Dark CSS (no build step)
-- **State & Storage**: Writable JSON state files in `DATA_DIR` (`schedule.json`, `unsubscribe_log.json`, `unsubscribe_settings.json`), in-memory caches (`opener_cache`, `hard_bounce_cache`)
+- **Frontend**: Vanilla JavaScript (ES6+), Chart.js (vendored in `static/js/vendor/`), Modern Dark CSS (no build step)
+- **State & Storage**: Writable JSON state files in `DATA_DIR` (`schedule.json`, `unsubscribe_log.json`, `unsubscribe_settings.json`, `unsubscribe_processed.json`), in-memory caches (`opener_cache`, `hard_bounce_cache`)
 - **Testing**: Pytest 9.1+, pytest-asyncio, AnyIO
 - **Deployment**: Docker, Docker Compose, Nginx, Certbot
 
@@ -108,6 +110,8 @@ Listmonk-Dashboard/
   - Whitelisted paths: `/auth/login`, `/auth/logout`, `/favicon.ico`, `/static/*`.
   - Unauthenticated `/api/*` requests receive `401 Unauthorized`.
   - Unauthenticated HTML page requests redirect (`302`) to `/auth/login`.
+- Login is rate-limited per client IP (10 failed attempts / 15 minutes → `429`).
+- `SecurityHeadersMiddleware` sets `X-Content-Type-Options`, `Referrer-Policy`, and `X-Frame-Options` on every response.
 
 ### 3. Bounce Ingestion & Smart Filtering
 - **Bounce Ingestion** (`app/services/bounce_ingest.py`):
@@ -119,22 +123,23 @@ Listmonk-Dashboard/
 - **Opener Cache** (`app/services/opener_cache.py`):
   - In-memory cache of subscribers who opened a campaign (`campaign_views`), with a 10-minute TTL and in-flight request deduplication.
 - **Hard Bounce Cache** (`app/services/hard_bounce_cache.py`):
-  - In-memory cache of true hard bounce counts per campaign, refreshed on startup and every 5 minutes in background. Overrides ListMonk's raw bounce count in campaign lists.
+  - In-memory cache of true hard bounce counts per campaign, refreshed on startup and every 5 minutes in background. Overrides ListMonk's raw bounce count in campaign lists once the first refresh completes.
 - **Fast Filtered Listing** (`app/services/bounce_list.py`):
   - Fast-path pagination and CSV exports with opener exclusion, using a semaphore (`CHECK_CONCURRENCY=25`) for single-query bounce validation.
 
 ### 4. Dual-Source Unsubscribe Engine
 - **IMAP Unsubscribe Monitor** (`app/services/imap_unsubscribe.py`):
-  - Scans primary inbox (`IMAP_*`) every hour for reply keywords (`"remove me"`, `"unsubscribe me"`, `"exclude me"`).
+  - Scans primary inbox (`IMAP_*`) every hour for **unseen** reply keywords (`"remove me"`, `"unsubscribe me"`, `"exclude me"`); blocking IMAP calls run via `asyncio.to_thread`.
   - Quote stripping (`_extract_reply_only`): ignores quoted history/template footers to eliminate false positives.
   - List-aware campaign matching: attributes replies to the latest campaign that targeted the subscriber's actual lists.
   - Actions: unenrolls subscriber from all lists, conditionally blocklists (if enabled in settings), logs to `unsubscribe_log.json`.
+  - Processed messages are marked `\Seen` after their records are persisted; handled emails are also stored in `unsubscribe_processed.json`, so clearing/deleting log records does not cause re-processing.
 - **Link Unsubscribe Scanner** (`app/services/link_unsubscribe.py`):
   - Polls ListMonk lists for subscribers with `unsubscribed` status.
   - Cascades unsubscription across all lists and applies optional blocklist.
-  - Logs records with `source: "link"`.
+  - Logs records with `source: "link"`; serialized with a module lock so manual and background scans cannot double-process.
 - **Undo / Reset** (`POST /api/unsubscribes/reset`):
-  - Re-subscribes users to their original removed lists, resets status to `enabled`, and removes restored records from log.
+  - Re-subscribes users to their original removed lists, resets status to `enabled`, removes restored records from log, and unmarks their emails so future unsubscribes are detected again.
 
 ### 5. Automation Workers (FastAPI Lifespan)
 All background tasks run as managed `asyncio.create_task` loops in `app/main.py`:
@@ -152,7 +157,7 @@ All background tasks run as managed `asyncio.create_task` loops in `app/main.py`
 - Supports direct import into ListMonk with list selection and subscription mode (`subscribe`, `unsubscribed`).
 
 ### 7. Persistent Runtime State (`DATA_DIR`)
-- `app/config.py` provides `settings.data_path(filename)` to store mutable JSON state files (`schedule.json`, `unsubscribe_log.json`, `unsubscribe_settings.json`).
+- `app/config.py` provides `settings.data_path(filename)` to store mutable JSON state files (`schedule.json`, `unsubscribe_log.json`, `unsubscribe_settings.json`, `unsubscribe_processed.json`).
 - In Docker, `DATA_DIR` defaults to `/data` (backed by a named volume).
 - Automatically migrates legacy root JSON files into `DATA_DIR` on first run.
 
@@ -179,6 +184,7 @@ All background tasks run as managed `asyncio.create_task` loops in `app/main.py`
 | | `/api/lists/{id}` | GET / PUT / DELETE | Get / update / delete list |
 | **Campaigns** | `/api/campaigns` | GET / POST | List campaigns (with hard bounce cache) / create |
 | | `/api/campaigns/running/stats` | GET | Real-time running campaign stats |
+| | `/api/campaigns/summary` | GET | Aggregate totals across all campaigns (cached 60s) |
 | | `/api/campaigns/export-all` | GET | Export all campaigns summary as CSV |
 | | `/api/campaigns/analytics/{type}` | GET | Campaign analytics (views/clicks/bounces/links) |
 | | `/api/campaigns/analytics/{type}/export` | GET | Export campaign analytics as CSV |

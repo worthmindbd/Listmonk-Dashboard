@@ -231,7 +231,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                 "message": "Ingest already in progress"}
 
     async with _INGEST_LOCK:
-        conn = connect_bounce_imap_rw()
+        conn = await asyncio.to_thread(connect_bounce_imap_rw)
         if not conn:
             return {"scanned": 0, "ingested": 0, "skipped": 0, "errors": 0,
                     "message": "Bounce IMAP not configured or connection failed"}
@@ -255,9 +255,11 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
             recent_campaigns = []
 
         try:
-            conn.select("INBOX", readonly=False)
+            await asyncio.to_thread(conn.select, "INBOX", readonly=False)
             since = imap_date(datetime.now(timezone.utc) - timedelta(days=30))
-            status, msg_ids = conn.search(None, f"(UNSEEN SINCE {since})")
+            status, msg_ids = await asyncio.to_thread(
+                conn.search, None, f"(UNSEEN SINCE {since})"
+            )
             if status != "OK" or not msg_ids or not msg_ids[0]:
                 return {"scanned": 0, "ingested": 0, "skipped": 0, "errors": 0,
                         "message": "No unseen bounce emails"}
@@ -268,7 +270,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
 
             for msg_id in ids:
                 try:
-                    status, data = conn.fetch(msg_id, "(RFC822)")
+                    status, data = await asyncio.to_thread(conn.fetch, msg_id, "(RFC822)")
                     if status != "OK" or not data or not data[0]:
                         errors += 1
                         continue
@@ -295,14 +297,14 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                     if not recipient:
                         skipped += 1
                         skipped_reasons["no_recipient"] = skipped_reasons.get("no_recipient", 0) + 1
-                        conn.store(msg_id, "+FLAGS", "\\Seen")
+                        await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
                         continue
 
                     # Look up subscriber
                     safe_email = safe_email_for_query(recipient)
                     if not safe_email:
                         logger.warning(f"Invalid recipient format, skipping: {recipient}")
-                        conn.store(msg_id, "+FLAGS", "\\Seen")
+                        await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
                         continue
                     try:
                         sub_res = await client.get_subscribers(
@@ -317,7 +319,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                     if not subs:
                         skipped += 1
                         skipped_reasons["no_subscriber"] = skipped_reasons.get("no_subscriber", 0) + 1
-                        conn.store(msg_id, "+FLAGS", "\\Seen")
+                        await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
                         continue
 
                     subscriber = subs[0]
@@ -333,7 +335,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                     if not campaign:
                         skipped += 1
                         skipped_reasons["no_campaign"] = skipped_reasons.get("no_campaign", 0) + 1
-                        conn.store(msg_id, "+FLAGS", "\\Seen")
+                        await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
                         continue
 
                     if await subscriber_opened_campaign(
@@ -347,7 +349,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                             f"[BounceIngest] skip {recipient}: opened campaign "
                             f"{campaign.get('id')}"
                         )
-                        conn.store(msg_id, "+FLAGS", "\\Seen")
+                        await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
                         continue
 
                     classification = classify_bounce(body, subject)
@@ -371,7 +373,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                             hard_count += 1
                         else:
                             soft_count += 1
-                        conn.store(msg_id, "+FLAGS", "\\Seen")
+                        await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
                     except Exception as e:
                         logger.error(f"create_bounce failed for {recipient}: {e}")
                         errors += 1
@@ -383,7 +385,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
 
         finally:
             try:
-                conn.logout()
+                await asyncio.to_thread(conn.logout)
             except Exception:
                 pass
 

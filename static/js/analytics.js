@@ -4,6 +4,7 @@
 const Analytics = {
     charts: {},
     campaigns: [],
+    summary: null,
     selectedCampaignId: 0,
     fromDate: '',
     toDate: '',
@@ -19,14 +20,16 @@ const Analytics = {
 
         App.setContent('<div class="loading-spinner">Loading analytics...</div>');
 
-        // Fetch campaigns and unsubscribe stats in parallel
+        // Fetch campaigns, unsubscribe stats, and accurate totals in parallel
         try {
-            const [campRes, unsubRes] = await Promise.allSettled([
+            const [campRes, unsubRes, summaryRes] = await Promise.allSettled([
                 API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC'),
                 API.get('/api/unsubscribes/stats'),
+                API.get('/api/campaigns/summary'),
             ]);
             this.campaigns = campRes.status === 'fulfilled' ? (campRes.value?.data?.results || []) : [];
             this.unsubStats = unsubRes.status === 'fulfilled' ? unsubRes.value : { total: 0 };
+            this.summary = summaryRes.status === 'fulfilled' ? (summaryRes.value || null) : null;
 
             // Default to first campaign if none selected
             if (!this.selectedCampaignId && this.campaigns.length) {
@@ -61,12 +64,13 @@ const Analytics = {
             `<option value="${c.id}" ${c.id === this.selectedCampaignId ? 'selected' : ''}>${App.escapeHtml(c.name)} (${c.status})</option>`
         ).join('');
 
-        // Build the overview stats from campaign data
+        // Build the overview stats. Prefer the all-campaigns summary endpoint;
+        // fall back to the loaded page only if it is unavailable.
         const selectedCamp = this.campaigns.find(c => c.id === this.selectedCampaignId);
-        const totalSent = this.campaigns.reduce((sum, c) => sum + (c.sent || 0), 0);
-        const totalViews = this.campaigns.reduce((sum, c) => sum + (c.views || 0), 0);
-        const totalClicks = this.campaigns.reduce((sum, c) => sum + (c.clicks || 0), 0);
-        const totalBounces = this.campaigns.reduce((sum, c) => sum + (c.bounces || 0), 0);
+        const totalSent = this.summary?.sent ?? this.campaigns.reduce((sum, c) => sum + (c.sent || 0), 0);
+        const totalViews = this.summary?.views ?? this.campaigns.reduce((sum, c) => sum + (c.views || 0), 0);
+        const totalClicks = this.summary?.clicks ?? this.campaigns.reduce((sum, c) => sum + (c.clicks || 0), 0);
+        const totalBounces = this.summary?.bounces ?? this.campaigns.reduce((sum, c) => sum + (c.bounces || 0), 0);
         const totalUnsubs = this.unsubStats?.total || 0;
 
         let html = `

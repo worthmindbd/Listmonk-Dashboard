@@ -19,6 +19,7 @@ from app.config import settings
 from app.services.listmonk_client import ListMonkClient
 from app.services.unsubscribe_log import (
     load_log, save_log, append_log, load_settings, save_settings,
+    load_processed_emails, mark_processed,
     _log_lock,
 )
 from app.services.imap_helpers import safe_email_for_query, imap_date, extract_email_body
@@ -209,14 +210,14 @@ def connect_imap() -> Optional[imaplib.IMAP4_SSL | imaplib.IMAP4]:
         return None
 
 
-def check_imap_status() -> dict:
-    """Check IMAP connection status without scanning."""
+async def check_imap_status() -> dict:
+    """Check IMAP connection status without scanning (off the event loop)."""
     if not settings.imap_configured:
         return {"configured": False, "connected": False, "error": "IMAP not configured in .env"}
     try:
-        conn = connect_imap()
+        conn = await asyncio.to_thread(connect_imap)
         if conn:
-            conn.logout()
+            await asyncio.to_thread(conn.logout)
             return {"configured": True, "connected": True, "error": None}
         return {"configured": True, "connected": False, "error": "Connection failed"}
     except Exception as e:
@@ -226,15 +227,29 @@ def check_imap_status() -> dict:
 _scan_lock = asyncio.Lock()
 
 
+def _prune_existing_records(records: list[dict], valid_cids: set) -> list[dict]:
+    """Drop records attributed to campaigns that no longer exist in ListMonk.
+
+    Records without a campaign_id (e.g. "No matching campaign" link records)
+    are kept — a missing attribution is not evidence of a deleted campaign.
+    Callers must only invoke this with a *complete* campaign id set.
+    """
+    return [
+        r for r in records
+        if r.get("campaign_id") is None or r.get("campaign_id") in valid_cids
+    ]
+
+
 def _reattribute_existing_records(
-    records: list[dict], campaigns_list: list[dict]
+    records: list[dict], campaigns_list: list[dict], allow_removal: bool = True
 ) -> tuple[int, int]:
     """
     One-time backfill: re-run list-aware attribution on existing email-source
     records that were stored with the old date-only matcher.
 
     - If a record matches a different campaign, update it in place.
-    - If a record matches no campaign, mark it for removal (caller filters).
+    - If a record matches no campaign, mark it for removal (caller filters)
+      — only when `allow_removal` is set, i.e. the campaign list is complete.
     - Skips records already marked with `reattributed_at`, records without
       `lists_removed`, and non-email records.
 
@@ -272,7 +287,7 @@ def _reattribute_existing_records(
                 r["matched_list_id"] = new_match.get("matched_list_id")
                 changed += 1
             r["reattributed_at"] = datetime.now(timezone.utc).isoformat()
-        else:
+        elif allow_removal:
             r["_remove"] = True
             removed += 1
 
@@ -289,7 +304,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                 "message": "Scan already in progress"}
 
     async with _scan_lock:
-        conn = connect_imap()
+        conn = await asyncio.to_thread(connect_imap)
         if not conn:
             return {"scanned": 0, "matched": 0, "processed": 0, "errors": 0,
                     "message": "IMAP not configured or connection failed"}
@@ -299,57 +314,76 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
         errors = 0
         scanned = 0
         new_records = []
+        seen_skips: list = []
+        seen_after_persist: list = []
 
         try:
             # Fetch campaigns FIRST to determine date filter
+            campaigns_complete = False
             try:
                 camp_result = await client.get_campaigns(
                     page=1, per_page=100, order_by="created_at", order="DESC"
                 )
                 campaigns_list = camp_result.get("data", {}).get("results", [])
+                campaigns_total = camp_result.get("data", {}).get("total", 0)
+                # Only the first page is fetched; pruning/removal is unsafe
+                # unless the list contains every campaign.
+                campaigns_complete = campaigns_total <= len(campaigns_list)
                 logger.info(f"[IMAP] Fetched {len(campaigns_list)} campaigns for matching")
             except Exception as e:
                 logger.error(f"Failed to fetch campaigns: {e}")
                 logger.error(f"[IMAP] ERROR fetching campaigns: {e}")
                 campaigns_list = []
 
-            # Backfill: re-attribute any pre-fix email records once, so the
-            # "Unsubscribes by Campaign" view self-heals on the next scan.
-            # Load log once and reuse across backfill, pruning, and dedup.
-            existing_log = load_log()
+            # Backfill + prune must be atomic with respect to other writers
+            # (link scanner, reset/delete endpoints) so no records are lost.
+            async with _log_lock:
+                # Load log once and reuse across backfill, pruning, and dedup.
+                existing_log = load_log()
 
-            if campaigns_list:
-                try:
-                    changed, removed = _reattribute_existing_records(
-                        existing_log, campaigns_list
-                    )
-                    if changed or removed:
-                        existing_log = [r for r in existing_log if not r.get("_remove")]
-                        save_log(existing_log)
-                        if changed:
-                            logger.info(f"[IMAP] Re-attributed {changed} existing records")
-                            logger.info(f"Backfill: re-attributed {changed} existing records")
-                        if removed:
-                            logger.info(f"[IMAP] Removed {removed} unattributable records")
-                            logger.info(f"Backfill: removed {removed} unattributable records")
-                except Exception as e:
-                    logger.error(f"Backfill reattribution failed: {e}")
-                    logger.warning(f"[IMAP] Backfill error (non-fatal): {e}")
+                if campaigns_list:
+                    try:
+                        changed, removed = _reattribute_existing_records(
+                            existing_log, campaigns_list,
+                            allow_removal=campaigns_complete,
+                        )
+                        if changed or removed:
+                            existing_log = [r for r in existing_log if not r.get("_remove")]
+                            save_log(existing_log)
+                            if changed:
+                                logger.info(f"[IMAP] Re-attributed {changed} existing records")
+                                logger.info(f"Backfill: re-attributed {changed} existing records")
+                            if removed:
+                                logger.info(f"[IMAP] Removed {removed} unattributable records")
+                                logger.info(f"Backfill: removed {removed} unattributable records")
+                    except Exception as e:
+                        logger.error(f"Backfill reattribution failed: {e}")
+                        logger.warning(f"[IMAP] Backfill error (non-fatal): {e}")
 
-            # Prune records whose campaign no longer exists in ListMonk.
-            if campaigns_list:
-                try:
-                    valid_cids = {c.get("id") for c in campaigns_list}
-                    pruned = [r for r in existing_log if r.get("campaign_id") in valid_cids]
-                    removed_count = len(existing_log) - len(pruned)
-                    if removed_count:
-                        existing_log = pruned
-                        save_log(existing_log)
-                        logger.info(f"[IMAP] Pruned {removed_count} records for deleted campaigns")
-                        logger.info(f"Pruned {removed_count} records for deleted campaigns")
-                except Exception as e:
-                    logger.error(f"Campaign prune failed: {e}")
-                    logger.warning(f"[IMAP] Prune error (non-fatal): {e}")
+                # Prune records whose campaign no longer exists in ListMonk.
+                # Requires a *complete* campaign list, and never drops records
+                # without a campaign_id ("No matching campaign").
+                if campaigns_list and campaigns_complete:
+                    try:
+                        valid_cids = {c.get("id") for c in campaigns_list}
+                        pruned = _prune_existing_records(existing_log, valid_cids)
+                        removed_count = len(existing_log) - len(pruned)
+                        if removed_count:
+                            existing_log = pruned
+                            save_log(existing_log)
+                            logger.info(f"[IMAP] Pruned {removed_count} records for deleted campaigns")
+                            logger.info(f"Pruned {removed_count} records for deleted campaigns")
+                    except Exception as e:
+                        logger.error(f"Campaign prune failed: {e}")
+                        logger.warning(f"[IMAP] Prune error (non-fatal): {e}")
+
+                # Dedup sources (message ids from the log, emails from the
+                # persistent processed set that survives log deletion/clearing).
+                processed_msg_ids = {
+                    r.get("message_id") for r in existing_log if r.get("message_id")
+                }
+
+            processed_emails_set = load_processed_emails()
 
             # Determine the latest campaign's creation date to filter emails
             latest_campaign_date = None
@@ -362,47 +396,51 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     except (ValueError, TypeError):
                         continue
 
-            conn.select("INBOX")
+            await asyncio.to_thread(conn.select, "INBOX")
 
-            # Use IMAP SINCE filter to only fetch emails from the campaign month
+            # Only fetch UNSEEN emails from the campaign month. Processed
+            # messages are marked \Seen, so clearing/resetting the log no
+            # longer causes old unsubscribe replies to be handled again.
             if latest_campaign_date:
                 # Search from the 1st of the campaign month
                 since_date = latest_campaign_date.replace(day=1)
                 since_str = imap_date(since_date)
-                status, msg_ids = conn.search(None, f'(SINCE {since_str})')
-                logger.info(f"[IMAP] Searching emails SINCE {since_str} (campaign month)")
+                status, msg_ids = await asyncio.to_thread(
+                    conn.search, None, f'(UNSEEN SINCE {since_str})'
+                )
+                logger.info(f"[IMAP] Searching unseen emails SINCE {since_str} (campaign month)")
             else:
                 # Fallback: scan last 30 days if no campaigns found
                 since_date = datetime.now(timezone.utc) - timedelta(days=30)
                 since_str = imap_date(since_date)
-                status, msg_ids = conn.search(None, f'(SINCE {since_str})')
-                logger.warning(f"[IMAP] No campaigns found, searching emails SINCE {since_str}")
+                status, msg_ids = await asyncio.to_thread(
+                    conn.search, None, f'(UNSEEN SINCE {since_str})'
+                )
+                logger.warning(f"[IMAP] No campaigns found, searching unseen emails SINCE {since_str}")
 
             if status != "OK" or not msg_ids[0]:
                 return {"scanned": 0, "matched": 0, "processed": 0, "errors": 0,
-                        "message": "No emails found in inbox for the campaign period"}
+                        "message": "No unseen emails found in inbox for the campaign period"}
 
             ids = msg_ids[0].split()
             scanned = len(ids)
-            logger.info(f"[IMAP] Found {scanned} emails in campaign period, scanning all")
-            logger.info(f"IMAP scan: {scanned} emails in campaign period")
-
-            # Deduplicate using Message-ID header and sender email (reuse existing_log)
-            processed_msg_ids = {r.get("message_id") for r in existing_log if r.get("message_id")}
-            processed_emails_set = {r["email"] for r in existing_log}
+            logger.info(f"[IMAP] Found {scanned} unseen emails in campaign period, scanning")
+            logger.info(f"IMAP scan: {scanned} unseen emails in campaign period")
 
             for msg_id in ids:
                 try:
-                    status, data = conn.fetch(msg_id, "(RFC822)")
+                    status, data = await asyncio.to_thread(conn.fetch, msg_id, "(RFC822)")
                     if status != "OK":
                         continue
 
                     raw_email = data[0][1]
                     msg = email.message_from_bytes(raw_email, policy=email.policy.default)
 
-                    # Dedup: skip if we already processed this email
+                    # Dedup: skip if we already processed this email (e.g. it
+                    # was handled before messages started being marked seen)
                     msg_message_id = msg.get("Message-ID", "").strip()
                     if msg_message_id and msg_message_id in processed_msg_ids:
+                        seen_skips.append(msg_id)
                         continue
 
                     body = _extract_body(msg)
@@ -421,16 +459,19 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                             logger.warning(f"[IMAP] FILTERED OUT: {sender_email_preview} "
                                   f"('{subject_preview}') — keyword only in "
                                   f"quoted/template content, not in actual reply")
+                        seen_skips.append(msg_id)
                         continue
 
                     matched += 1
                     sender_email = _extract_sender_email(msg)
                     if not sender_email:
                         logger.warning(f"Could not extract sender email from message")
+                        seen_skips.append(msg_id)
                         continue
 
                     # Skip if this sender was already processed
                     if sender_email in processed_emails_set:
+                        seen_skips.append(msg_id)
                         continue
 
                     matched_keyword = keyword_match.group(0).lower()
@@ -459,6 +500,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     safe_email = safe_email_for_query(sender_email)
                     if not safe_email:
                         logger.warning(f"Invalid email format, skipping: {sender_email}")
+                        seen_skips.append(msg_id)
                         continue
                     try:
                         result = await client.get_subscribers(
@@ -468,6 +510,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
 
                         if not subscribers:
                             logger.info(f"Sender {sender_email} not found in ListMonk, skipping")
+                            seen_skips.append(msg_id)
                             continue
 
                         subscriber = subscribers[0]
@@ -482,6 +525,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                         if not campaign:
                             logger.info(f"[IMAP] No list-matched campaign for {sender_email}, skipping")
                             logger.info(f"No list-matched campaign for '{subject}' from {sender_email}; skipping")
+                            seen_skips.append(msg_id)
                             continue
 
                         # Unsubscribe from all lists
@@ -515,6 +559,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
                         new_records.append(record)
+                        seen_after_persist.append(msg_id)
                         processed_emails_set.add(sender_email)  # Prevent duplicates in same scan
                         processed += 1
                         action = "Unsubscribed + Blocklisted" if scan_settings.get("blocklist_enabled") else "Unsubscribed"
@@ -528,16 +573,28 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     errors += 1
                     logger.error(f"Failed to parse email {msg_id}: {e}")
 
-            # Save new records
+            # Persist new records first, then mark their messages \Seen so a
+            # crash cannot silently lose an unsubscribe. Skipped messages are
+            # safe to mark immediately.
             if new_records:
                 await append_log(new_records)
+                await mark_processed(r["email"] for r in new_records)
+
+            # Mark skipped messages seen immediately; successfully processed
+            # ones only after their records are persisted (a crash in between
+            # leaves them unseen so the unsubscribe can be retried).
+            for mid in seen_skips + seen_after_persist:
+                try:
+                    await asyncio.to_thread(conn.store, mid, "+FLAGS", "\\Seen")
+                except Exception as e:
+                    logger.warning(f"[IMAP] Could not mark message {mid} as seen: {e}")
 
         except Exception as e:
             logger.error(f"IMAP scan error: {e}")
             errors += 1
         finally:
             try:
-                conn.logout()
+                await asyncio.to_thread(conn.logout)
             except Exception:
                 pass
 
@@ -570,6 +627,9 @@ def get_stats() -> dict:
             dt = datetime.fromisoformat(ts)
         except (ValueError, TypeError):
             continue
+        # Legacy records may store naive timestamps; treat them as UTC.
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         if dt >= week_ago:
             week_count += 1
 
