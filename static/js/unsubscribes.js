@@ -290,7 +290,7 @@ const Unsubscribes = {
             <div class="card">
                 <div class="table-wrapper"><table>
                     <thead><tr>
-                        <th style="width:30px"><input type="checkbox" onchange="Unsubscribes.toggleSelectAll(this)" ${this.selectedEmails.size === records.length && records.length > 0 ? 'checked' : ''}/></th>
+                        <th style="width:30px"><input type="checkbox" onchange="Unsubscribes.toggleSelectAll(this)" ${this._isPageFullySelected() ? 'checked' : ''}/></th>
                         <th>#</th><th>Email</th><th>Name</th><th>Type</th><th>Date</th><th>Actions</th>
                     </tr></thead><tbody>`;
 
@@ -334,6 +334,17 @@ const Unsubscribes = {
     },
 
     /* ── Selection ────────────────────────────────────────── */
+    /** Emails selected on the *current* page (the set also spans pages). */
+    _pageEmails() {
+        return (this.campaignRecords.results || []).map(r => r.email).filter(Boolean);
+    },
+
+    /** True only when every row on this page is selected. */
+    _isPageFullySelected() {
+        const emails = this._pageEmails();
+        return emails.length > 0 && emails.every(e => this.selectedEmails.has(e));
+    },
+
     toggleSelect(idx) {
         const records = this.campaignRecords.results || [];
         const email = records[idx]?.email;
@@ -347,11 +358,13 @@ const Unsubscribes = {
     },
 
     toggleSelectAll(checkbox) {
-        const records = this.campaignRecords.results || [];
+        // Scoped to the current page: selectedEmails can hold rows from other
+        // pages, so comparing set size to this page's length is meaningless.
+        const emails = this._pageEmails();
         if (checkbox.checked) {
-            records.forEach(r => this.selectedEmails.add(r.email));
+            emails.forEach(e => this.selectedEmails.add(e));
         } else {
-            this.selectedEmails.clear();
+            emails.forEach(e => this.selectedEmails.delete(e));
         }
         this.renderDetailView();
     },
@@ -368,21 +381,23 @@ const Unsubscribes = {
         const records = this.campaignRecords.results || [];
         const email = records[idx]?.email;
         if (!email) return;
-        if (!confirm(`Remove "${email}" from this campaign's unsubscribe list?`)) return;
+        if (!await App.confirm('Remove Record',
+                `Remove "${email}" from this campaign's unsubscribe list?`)) return;
         try {
             await API.del(`/api/unsubscribes/records?emails=${encodeURIComponent(email)}`);
             App.toast(`Removed ${email}`, 'success');
             this.selectedEmails.delete(email);
             await this.render();
         } catch {
-            App.toast('Failed to remove record', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
     async bulkDeleteSelected() {
         const count = this.selectedEmails.size;
         if (!count) return;
-        if (!confirm(`Remove ${count} selected record(s)? This cannot be undone.`)) return;
+        if (!await App.confirm('Remove Records',
+                `Remove ${count} selected record(s)? This cannot be undone.`)) return;
         try {
             const emailParams = [...this.selectedEmails].map(e => `emails=${encodeURIComponent(e)}`).join('&');
             await API.del(`/api/unsubscribes/records?${emailParams}`);
@@ -390,19 +405,20 @@ const Unsubscribes = {
             this.selectedEmails.clear();
             await this.render();
         } catch {
-            App.toast('Failed to remove records', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
     async removeCampaign(campaignId) {
-        if (!confirm('Remove ALL unsubscribe records for this campaign? This cannot be undone.')) return;
+        if (!await App.confirm('Remove Campaign Records',
+                'Remove ALL unsubscribe records for this campaign? This cannot be undone.')) return;
         try {
             const res = await API.del(`/api/unsubscribes/campaign/${campaignId}`);
             App.toast(res.message || 'Campaign removed', 'success');
             this.activeCampaign = null;
             await this.render();
         } catch {
-            App.toast('Failed to remove campaign', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -415,7 +431,7 @@ const Unsubscribes = {
                 App.toast('Campaign exported', 'success');
             }
         } catch {
-            App.toast('Export failed', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -427,7 +443,7 @@ const Unsubscribes = {
                 App.toast('All unsubscribes exported', 'success');
             }
         } catch {
-            App.toast('Export failed — no records found', 'error');
+            // API.request already surfaced the server message (404 when empty).
         }
     },
 
@@ -457,8 +473,8 @@ const Unsubscribes = {
                 return;
             }
             const result = await resp.json();
-            if (result.error) {
-                App.toast(result.error, 'error');
+            if (!resp.ok) {
+                App.toast(result.detail || 'Scan failed', 'error');
             } else {
                 const imapData = result.imap || result;  // supports both old and new format
                 const linkData = result.link || {};
@@ -502,14 +518,15 @@ const Unsubscribes = {
     },
 
     async resetAll() {
-        if (!confirm('This will UNDO all unsubscribes — re-enable and re-subscribe all processed leads in ListMonk, then remove restored records from the log. Continue?')) return;
+        if (!await App.confirm('Undo All Unsubscribes',
+            'This will UNDO all unsubscribes — re-enable and re-subscribe all processed leads in ListMonk, then remove restored records from the log. Continue?')) return;
         App.toast('Resetting all unsubscribes...', 'info');
         try {
             const result = await API.post('/api/unsubscribes/reset');
             App.toast(result.message || 'Reset complete', 'success');
             await this.render();
-        } catch (err) {
-            App.toast(`Reset failed: ${err.message || 'Unknown error'}`, 'error');
+        } catch {
+            // API.request already surfaced the server message.
         }
     },
 };

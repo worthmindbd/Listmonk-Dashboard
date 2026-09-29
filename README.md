@@ -101,8 +101,17 @@ LISTMONK_API_KEY=your-api-key-here
 DASHBOARD_USER=admin
 DASHBOARD_PASS=changeme
 
-# Session Signing Key (leave empty to auto-generate, or set a random 64-char hex string)
+# Session Signing Key (leave empty to auto-generate and persist to DATA_DIR,
+# or set a random 64-char hex string for persistent sessions across restarts)
 SESSION_SECRET=
+
+# Set to true when the app ALWAYS sits behind a trusted reverse proxy, so that
+# X-Forwarded-For is honoured for login rate limiting. Leave unset to only
+# trust loopback/private peers (the usual same-host Nginx setup).
+# TRUST_PROXY=true
+
+# Log level for the app's own loggers (default INFO).
+# LOG_LEVEL=INFO
 
 # IMAP Settings for Unsubscribe Monitoring (Optional)
 IMAP_HOST=mail.example.com

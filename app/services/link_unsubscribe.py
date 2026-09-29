@@ -7,6 +7,7 @@ unsubscribe_log.json with source="link".
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 
 from app.services.listmonk_client import ListMonkClient
@@ -18,8 +19,15 @@ logger = logging.getLogger("link_unsubscribe")
 
 PER_PAGE = 100  # Patchable in tests
 MAX_PAGES_PER_LIST = 500  # Safety cap: 50k subscribers per list
+CAMPAIGN_PAGE_SIZE = 100
+MAX_CAMPAIGN_PAGES = 20  # Safety cap: 2000 campaigns
+CAMPAIGN_HISTORY_TTL = 900  # 15 minutes; campaign creation is rare
 
 _link_scan_lock = asyncio.Lock()
+
+# Full campaign history (newest first) used for attribution, plus its load time.
+_campaign_history: list[dict] = []
+_campaign_history_at: float = 0.0
 
 
 def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
@@ -28,17 +36,23 @@ def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
     of list_ids. `campaigns` must be pre-sorted DESC by created_at.
     Returns {campaign_id, campaign_name, campaign_key, matched_list_id}.
     matched_list_id is one of list_ids that the chosen campaign targets — used
-    by the caller to set a representative list_id on the log record.
+    by the caller to set a representative list_id on the log record. When the
+    campaign targets no known list (the API omitted `lists`), fall back to the
+    lowest list id so the result is stable across runs instead of depending on
+    set iteration order.
     """
     now = datetime.now(timezone.utc)
+    fallback_list_id = min(list_ids) if list_ids else None
     for camp in campaigns:
         camp_list_ids = [l.get("id") for l in (camp.get("lists") or [])]
         # Intersect campaign's target lists with subscriber's unsubscribed lists.
         # If the API omits lists, fall back to time-based matching only.
         matched = None
         if camp_list_ids:
-            for lid in camp_list_ids:
-                if lid in list_ids:
+            # Iterate the subscriber's ids in a stable order rather than the
+            # campaign's, so repeated runs attribute to the same list.
+            for lid in sorted(x for x in list_ids if x is not None):
+                if lid in camp_list_ids:
                     matched = lid
                     break
             if matched is None:
@@ -62,20 +76,82 @@ def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
                 "campaign_id": camp.get("id"),
                 "campaign_name": camp.get("name", ""),
                 "campaign_key": f"{camp_date.year}-{camp_date.month:02d}",
-                "matched_list_id": matched if matched is not None else (next(iter(list_ids)) if list_ids else None),
+                "matched_list_id": matched if matched is not None else fallback_list_id,
             }
 
     return {
         "campaign_id": None,
         "campaign_name": "No matching campaign",
         "campaign_key": _current_campaign_key(),
-        "matched_list_id": next(iter(list_ids)) if list_ids else None,
+        "matched_list_id": fallback_list_id,
     }
 
 
 def _current_campaign_key() -> str:
     now = datetime.now(timezone.utc)
     return f"{now.year}-{now.month:02d}"
+
+
+def _campaign_dt(camp: dict) -> datetime | None:
+    """Parse a campaign's ``created_at`` into an aware UTC datetime."""
+    created = camp.get("created_at") or ""
+    if not created:
+        return None
+    for candidate in (created, created[:10]):
+        try:
+            parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+async def _fetch_campaign_history(client: ListMonkClient) -> list[dict]:
+    """Fetch the full campaign history, newest first.
+
+    Cached briefly because the link scan runs hourly while campaign creation
+    is rare, and every unsubscribed subscriber is attributed against this list.
+    """
+    global _campaign_history, _campaign_history_at
+
+    now = time.monotonic()
+    if _campaign_history and now - _campaign_history_at < CAMPAIGN_HISTORY_TTL:
+        return _campaign_history
+
+    campaigns: list[dict] = []
+    page = 1
+    while page <= MAX_CAMPAIGN_PAGES:
+        result = await client.get_campaigns(
+            page=page, per_page=CAMPAIGN_PAGE_SIZE,
+            order_by="created_at", order="DESC",
+        )
+        results = result.get("data", {}).get("results", [])
+        if not results:
+            break
+        campaigns.extend(results)
+        page += 1
+    else:
+        logger.warning(
+            f"[LINK] Stopped campaign history at {MAX_CAMPAIGN_PAGES} pages; "
+            "older unsubscribes may be attributed to a newer campaign"
+        )
+
+    if campaigns:
+        # _pick_campaign_for_list_ids relies on newest-first ordering to pick the
+        # most recent match, and trusts the caller to have supplied it. Sort
+        # explicitly so attribution cannot silently invert if the API's ordering
+        # changes or a future caller forgets the DESC parameter.
+        campaigns.sort(key=lambda c: _campaign_dt(c) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        _campaign_history = campaigns
+        _campaign_history_at = time.monotonic()
+    return campaigns
+
+
+def invalidate_campaign_history() -> None:
+    """Drop the cached campaign history (tests, or after a campaign change)."""
+    global _campaign_history, _campaign_history_at
+    _campaign_history = []
+    _campaign_history_at = 0.0
 
 
 async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
@@ -161,12 +237,12 @@ async def _scan_link_unsubscribes_impl(client: ListMonkClient) -> dict:
                 break
             page += 1
 
-    # Phase 2: fetch campaigns once for attribution
+    # Phase 2: fetch campaigns once for attribution. The full history is
+    # walked (newest-first) rather than a single page: a subscriber who
+    # unsubscribed months ago must be attributed to the campaign they
+    # actually received, not to whichever recent campaign shares a list.
     try:
-        camp_result = await client.get_campaigns(
-            page=1, per_page=50, order_by="created_at", order="DESC"
-        )
-        campaigns = camp_result.get("data", {}).get("results", [])
+        campaigns = await _fetch_campaign_history(client)
     except Exception as e:
         logger.warning(f"Could not fetch campaigns: {e}")
         campaigns = []

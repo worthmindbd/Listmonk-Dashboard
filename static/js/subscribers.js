@@ -106,9 +106,13 @@ const Subscribers = {
 
         if (!email) { App.toast('Email is required', 'error'); return; }
 
-        await API.post('/api/subscribers', { email, name, status, attribs, lists: [] });
-        App.toast('Subscriber created', 'success');
-        this.render();
+        try {
+            await API.post('/api/subscribers', { email, name, status, attribs, lists: [] });
+            App.toast('Subscriber created', 'success');
+            this.render();
+        } catch {
+            // API.request already surfaced the server message.
+        }
     },
 
     async showEdit(id) {
@@ -141,7 +145,7 @@ const Subscribers = {
                 </div>
             `);
         } catch {
-            App.toast('Failed to load subscriber', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -152,16 +156,24 @@ const Subscribers = {
         let attribs = {};
         try { attribs = JSON.parse(document.getElementById('editAttribs').value); } catch {}
 
-        await API.put(`/api/subscribers/${id}`, { email, name, status, attribs });
-        App.toast('Subscriber updated', 'success');
-        this.render();
+        try {
+            await API.put(`/api/subscribers/${id}`, { email, name, status, attribs });
+            App.toast('Subscriber updated', 'success');
+            this.render();
+        } catch {
+            // API.request already surfaced the server message.
+        }
     },
 
     async remove(id) {
         if (await App.confirm('Delete Subscriber', 'Are you sure you want to delete this subscriber?')) {
-            await API.del(`/api/subscribers/${id}`);
-            App.toast('Subscriber deleted', 'success');
-            this.render();
+            try {
+                await API.del(`/api/subscribers/${id}`);
+                App.toast('Subscriber deleted', 'success');
+                this.render();
+            } catch {
+                // API.request already surfaced the server message.
+            }
         }
     },
 
@@ -172,7 +184,7 @@ const Subscribers = {
             API.downloadBlob(result.blob, 'subscribers_export.csv');
             App.toast('Export downloaded', 'success');
         } catch {
-            App.toast('Export failed', 'error');
+            // API.request already surfaced the server message.
         }
     },
 };

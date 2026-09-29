@@ -421,6 +421,11 @@ td strong,
     box-shadow: 0 0 10px var(--ruby-glow);
 }
 
+/* Logout is a POST form so a cross-site GET cannot force a sign-out. */
+.logout-form {
+    margin: 0;
+}
+
 .logout-btn {
     width: 100%;
     justify-content: center;

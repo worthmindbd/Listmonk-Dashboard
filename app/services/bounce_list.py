@@ -6,6 +6,7 @@ from typing import Optional
 
 from app.services.bounce_filters import (
     bounce_campaign_id,
+    build_opener_emails_by_campaign,
     email_opened_campaign,
     exclude_openers_from_bounces,
     filter_bounces_excluding_openers,
@@ -18,6 +19,12 @@ LM_FETCH_SIZE = 100
 MAX_LM_PAGES = 300
 CHECK_CONCURRENCY = 25
 
+# Fetching a campaign's opener set is a single ListMonk query no matter how
+# many bounces it has, so it beats the per-email fallback as soon as a batch
+# holds more than a handful of bounces — and it warms opener_cache, which makes
+# every later page an in-memory lookup instead of another round of queries.
+COLD_CACHE_EMAIL_THRESHOLD = 20
+
 
 async def filter_bounces_excluding_openers_fast(
     client: ListMonkClient,
@@ -28,30 +35,41 @@ async def filter_bounces_excluding_openers_fast(
         return bounces
 
     campaign_ids = {cid for b in bounces if (cid := bounce_campaign_id(b))}
-    if campaign_ids and all(is_cached(cid) for cid in campaign_ids):
+    if not campaign_ids:
+        return bounces
+
+    if all(is_cached(cid) for cid in campaign_ids):
         opener_map = {
             cid: get_cached_opener_emails(cid) or set() for cid in campaign_ids
         }
         return exclude_openers_from_bounces(bounces, opener_map)
 
-    import asyncio
+    # Cold cache. Per-email checks are only cheaper for a small batch; beyond
+    # that the bulk fetch wins AND populates opener_cache, so the next page
+    # hits the fast path above instead of re-querying for every bounce again.
+    attributed = [b for b in bounces if bounce_campaign_id(b)]
+    if len(attributed) <= COLD_CACHE_EMAIL_THRESHOLD:
+        import asyncio
 
-    sem = asyncio.Semaphore(CHECK_CONCURRENCY)
-    keep: list[dict | None] = [None] * len(bounces)
+        sem = asyncio.Semaphore(CHECK_CONCURRENCY)
+        keep: list[dict | None] = [None] * len(bounces)
 
-    async def check(idx: int, bounce: dict):
-        cid = bounce_campaign_id(bounce)
-        email = bounce.get("email")
-        if not cid or not email:
-            keep[idx] = bounce
-            return
-        async with sem:
-            opened = await email_opened_campaign(client, email, cid)
-        if not opened:
-            keep[idx] = bounce
+        async def check(idx: int, bounce: dict):
+            cid = bounce_campaign_id(bounce)
+            email = bounce.get("email")
+            if not cid or not email:
+                keep[idx] = bounce
+                return
+            async with sem:
+                opened = await email_opened_campaign(client, email, cid)
+            if not opened:
+                keep[idx] = bounce
 
-    await asyncio.gather(*(check(i, b) for i, b in enumerate(bounces)))
-    return [b for b in keep if b is not None]
+        await asyncio.gather(*(check(i, b) for i, b in enumerate(bounces)))
+        return [b for b in keep if b is not None]
+
+    opener_map = await build_opener_emails_by_campaign(client, campaign_ids)
+    return exclude_openers_from_bounces(bounces, opener_map)
 
 
 def estimate_filtered_hard_total(campaign_id: Optional[int] = None) -> int | None:

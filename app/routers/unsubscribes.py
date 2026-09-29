@@ -1,6 +1,7 @@
+import asyncio
+import logging
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-import logging
 from app.services.imap_unsubscribe import (
     get_stats, check_imap_status, scan_and_unsubscribe,
 )
@@ -13,6 +14,17 @@ from app.services.listmonk_client import listmonk
 from app.services.export_service import dict_list_to_csv
 
 router = APIRouter()
+
+# Pagination bounds. These lists are served from an in-memory JSON log, so the
+# cap exists to stop a single request from materialising an unbounded slice.
+MAX_PAGE = 1000
+MAX_PER_PAGE = 200
+
+# "Undo all" touches every record in the log, and each one costs 2-3 serial
+# ListMonk round trips. Left unbounded a large log holds the worker for hours
+# and the client times out long before anything is restored.
+RESET_MAX_RECORDS = 5000
+RESET_CONCURRENCY = 10
 
 
 @router.get("/settings")
@@ -37,7 +49,8 @@ async def update_unsub_settings(request: Request):
 
 
 @router.get("")
-async def get_unsubscribes(page: int = 1, per_page: int = 25):
+async def get_unsubscribes(page: int = Query(1, ge=1, le=MAX_PAGE),
+                           per_page: int = Query(25, ge=1, le=MAX_PER_PAGE)):
     """Return paginated unsubscribe records (newest first)."""
     records = load_log()
     records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
@@ -100,7 +113,9 @@ async def get_campaign_groups():
 
 
 @router.get("/campaign/{campaign_id}")
-async def get_campaign_records(campaign_id: int, page: int = 1, per_page: int = 50):
+async def get_campaign_records(campaign_id: int,
+                               page: int = Query(1, ge=1, le=MAX_PAGE),
+                               per_page: int = Query(50, ge=1, le=MAX_PER_PAGE)):
     """Return paginated records for a specific campaign by its ID."""
     records = load_log()
     campaign_records = [r for r in records if r.get("campaign_id") == campaign_id]
@@ -189,14 +204,15 @@ async def trigger_scan():
     try:
         imap_result = await scan_and_unsubscribe(listmonk)
         link_result = await scan_link_unsubscribes(listmonk)
-        total_processed = imap_result.get("processed", 0) + link_result.get("processed", 0)
-        return {
-            "imap": imap_result,
-            "link": link_result,
-            "message": f"Scan complete: {total_processed} unsubscribed",
-        }
     except Exception as e:
-        return {"error": str(e)}
+        logging.getLogger("unsubscribes").error(f"unsubscribe scan failed: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Scan failed: {e}")
+    total_processed = imap_result.get("processed", 0) + link_result.get("processed", 0)
+    return {
+        "imap": imap_result,
+        "link": link_result,
+        "message": f"Scan complete: {total_processed} unsubscribed",
+    }
 
 
 @router.delete("/clear")
@@ -220,63 +236,89 @@ async def reset_all_unsubscribes():
     if not records:
         return {"message": "No records to reset", "restored": 0, "failed": 0}
 
-    restored = 0
-    failed = 0
-    details = []
-    failed_records = []
-    restored_keys = set()
+    if len(records) > RESET_MAX_RECORDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Refusing to reset {len(records)} records at once "
+                f"(limit {RESET_MAX_RECORDS}). Remove records per campaign first."
+            ),
+        )
 
-    for r in records:
-        sub_id = r.get("subscriber_id")
-        email_addr = r.get("email", "unknown")
-        lists_removed = r.get("lists_removed", [])
+    sem = asyncio.Semaphore(RESET_CONCURRENCY)
+    results: list[dict] = [None] * len(records)  # type: ignore[list-item]
 
-        if not sub_id:
-            failed += 1
-            failed_records.append(r)
-            details.append(f"SKIP {email_addr}: no subscriber_id")
-            continue
+    async def restore(idx: int, r: dict) -> None:
+        async with sem:
+            sub_id = r.get("subscriber_id")
+            email_addr = r.get("email", "unknown")
+            lists_removed = r.get("lists_removed", [])
 
-        try:
-            # Step 1: Fetch current subscriber data from ListMonk
-            result = await listmonk.get_subscriber(sub_id)
-            subscriber = result.get("data", {})
+            if not sub_id:
+                results[idx] = {
+                    "ok": False, "key": (sub_id, email_addr),
+                    "detail": f"SKIP {email_addr}: no subscriber_id",
+                }
+                return
 
-            if not subscriber:
-                failed += 1
-                failed_records.append(r)
-                details.append(f"SKIP {email_addr}: subscriber {sub_id} not found")
-                continue
+            try:
+                # Step 1: Fetch current subscriber data from ListMonk
+                result = await listmonk.get_subscriber(sub_id)
+                subscriber = result.get("data", {})
 
-            # Step 2: Re-enable subscriber (remove blocklist)
-            current_lists = [lst["id"] for lst in subscriber.get("lists", [])]
-            await listmonk.update_subscriber(sub_id, {
-                "email": subscriber["email"],
-                "name": subscriber.get("name", ""),
-                "status": "enabled",
-                "lists": current_lists,
-                "attribs": subscriber.get("attribs", {}),
-            })
+                if not subscriber:
+                    results[idx] = {
+                        "ok": False, "key": (sub_id, email_addr),
+                        "detail": f"SKIP {email_addr}: subscriber {sub_id} not found",
+                    }
+                    return
 
-            # Step 3: Re-subscribe to removed lists
-            if lists_removed:
-                await listmonk.modify_list_memberships({
-                    "ids": [sub_id],
-                    "action": "add",
-                    "target_list_ids": lists_removed,
-                    "status": "confirmed",
+                # Step 2: Re-enable subscriber (remove blocklist)
+                current_lists = [lst["id"] for lst in subscriber.get("lists", [])]
+                await listmonk.update_subscriber(sub_id, {
+                    "email": subscriber["email"],
+                    "name": subscriber.get("name", ""),
+                    "status": "enabled",
+                    "lists": current_lists,
+                    "attribs": subscriber.get("attribs", {}),
                 })
 
-            restored += 1
-            restored_keys.add((sub_id, email_addr))
-            details.append(f"OK {email_addr}: enabled + re-added to lists {lists_removed}")
-            logging.getLogger("unsubscribes").info(f"Restored: {email_addr} (lists: {lists_removed})")
+                # Step 3: Re-subscribe to removed lists
+                if lists_removed:
+                    await listmonk.modify_list_memberships({
+                        "ids": [sub_id],
+                        "action": "add",
+                        "target_list_ids": lists_removed,
+                        "status": "confirmed",
+                    })
 
-        except Exception as e:
-            failed += 1
-            failed_records.append(r)
-            details.append(f"FAIL {email_addr}: {e}")
-            logging.getLogger("unsubscribes").error(f"Reset failed: {email_addr}: {e}")
+                results[idx] = {
+                    "ok": True, "key": (sub_id, email_addr),
+                    "detail": f"OK {email_addr}: enabled + re-added to lists {lists_removed}",
+                }
+
+            except Exception as e:
+                results[idx] = {
+                    "ok": False, "key": (sub_id, email_addr),
+                    "detail": f"FAIL {email_addr}: {e}",
+                }
+
+    await asyncio.gather(*(restore(i, r) for i, r in enumerate(records)))
+
+    details: list[str] = []
+    restored_keys: set = set()
+    for res in results:
+        if res is None:
+            continue
+        details.append(res["detail"])
+        if res["ok"]:
+            restored_keys.add(res["key"])
+            logging.getLogger("unsubscribes").info(res["detail"])
+        else:
+            logging.getLogger("unsubscribes").error(res["detail"])
+
+    restored = len(restored_keys)
+    failed = len(records) - restored
 
     # Only clear records that were successfully restored;
     # failed records and newly arrived records stay in the log.

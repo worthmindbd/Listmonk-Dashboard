@@ -60,6 +60,43 @@ def clear_login_failures(ip: str) -> None:
     _login_failures.pop(ip, None)
 
 
+def client_ip_from_request(request: Request) -> str:
+    """Resolve the real client IP for rate limiting.
+
+    Behind a reverse proxy ``request.client.host`` is the *proxy*, so every
+    visitor shares one bucket and a handful of failed logins locks everyone
+    out. ``X-Forwarded-For`` carries the original client, but it is
+    client-controlled: only honour it when the immediate peer is a trusted
+    proxy, otherwise an attacker can spoof a fresh IP per attempt and defeat
+    the limit entirely.
+    """
+    peer = request.client.host if request.client else "unknown"
+
+    trusted = os.getenv("TRUST_PROXY", "").strip().lower()
+    if trusted in ("1", "true", "yes"):
+        pass  # deployment states it always sits behind a trusted proxy
+    elif trusted in ("0", "false", "no"):
+        return peer
+    else:
+        # Default: only trust loopback/private peers (typical same-host Nginx).
+        try:
+            import ipaddress
+            addr = ipaddress.ip_address(peer)
+            trusted_peer = addr.is_loopback or addr.is_private
+        except ValueError:
+            trusted_peer = False
+        if not trusted_peer:
+            return peer
+
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        # Left-most entry is the original client.
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return peer
+
+
 def _load_or_create_secret_key() -> str:
     """Load SESSION_SECRET from env, persisted key file in DATA_DIR, or generate a new one."""
     key = os.getenv("SESSION_SECRET", "")
@@ -185,6 +222,17 @@ def clear_session(response: Response, request: Optional[Request] = None):
     )
 
 
+def _constant_time_equals(a: str, b: str) -> bool:
+    """Compare two strings in constant time.
+
+    ``hmac.compare_digest`` raises ``TypeError`` on ``str`` inputs containing
+    non-ASCII characters, which would turn a bad password into a 500. Encoding
+    to UTF-8 first keeps the comparison constant-time for any input and makes
+    non-ASCII credentials a normal authentication failure.
+    """
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
 def check_credentials(username: str, password: str) -> bool:
     """Validate login credentials against DASHBOARD_USER / DASHBOARD_PASS env vars.
 
@@ -199,7 +247,8 @@ def check_credentials(username: str, password: str) -> bool:
             "Login is disabled until credentials are configured."
         )
         return False
-    return (
-        hmac.compare_digest(username, valid_user)
-        and hmac.compare_digest(password, valid_pass)
-    )
+    # Both sides are always evaluated so a wrong username does not return
+    # measurably faster than a wrong password.
+    user_ok = _constant_time_equals(username, valid_user)
+    pass_ok = _constant_time_equals(password, valid_pass)
+    return user_ok and pass_ok

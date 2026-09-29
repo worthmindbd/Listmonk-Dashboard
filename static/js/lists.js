@@ -110,9 +110,13 @@ const Lists = {
 
         if (!name) { App.toast('Name is required', 'error'); return; }
 
-        await API.post('/api/lists', { name, type, optin, description, tags });
-        App.toast('List created', 'success');
-        this.render();
+        try {
+            await API.post('/api/lists', { name, type, optin, description, tags });
+            App.toast('List created', 'success');
+            this.render();
+        } catch {
+            // API.request already surfaced the server message.
+        }
     },
 
     async showEdit(id) {
@@ -149,7 +153,7 @@ const Lists = {
                 </div>
             `);
         } catch {
-            App.toast('Failed to load list', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -160,16 +164,24 @@ const Lists = {
         const description = document.getElementById('editListDesc').value.trim();
         const tags = document.getElementById('editListTags').value.split(',').map(t => t.trim()).filter(Boolean);
 
-        await API.put(`/api/lists/${id}`, { name, type, optin, description, tags });
-        App.toast('List updated', 'success');
-        this.render();
+        try {
+            await API.put(`/api/lists/${id}`, { name, type, optin, description, tags });
+            App.toast('List updated', 'success');
+            this.render();
+        } catch {
+            // API.request already surfaced the server message.
+        }
     },
 
     async remove(id) {
         if (await App.confirm('Delete List', 'Are you sure you want to delete this list? All subscriber associations will be removed.')) {
-            await API.del(`/api/lists/${id}`);
-            App.toast('List deleted', 'success');
-            this.render();
+            try {
+                await API.del(`/api/lists/${id}`);
+                App.toast('List deleted', 'success');
+                this.render();
+            } catch {
+                // API.request already surfaced the server message.
+            }
         }
     },
 };

@@ -1,19 +1,25 @@
 import asyncio
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from typing import Optional
 from app.services.listmonk_client import listmonk
 from app.services.bounce_ingest import ingest_bounce_mailbox
 from app.services.bounce_list import fetch_all_filtered_bounces, fetch_filtered_bounces_page
+from app.services.bounce_filters import bounce_campaign_id, bounce_campaign_name
 from app.services.export_service import dict_list_to_csv
-from app.services.hard_bounce_cache import update_hard_bounce_counts
-from app.services.task_utils import spawn
+from app.services.hard_bounce_cache import schedule_hard_bounce_update
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _DELETE_CONCURRENCY = 10
+
+# Bounce listing is the most expensive endpoint: serving page N requires
+# scanning and opener-filtering every preceding record, so an unbounded
+# per_page multiplies into tens of thousands of ListMonk queries. Cap both.
+MAX_PAGE = 100
+MAX_PER_PAGE = 100
 
 
 @router.post("/ingest")
@@ -22,7 +28,7 @@ async def ingest_bounces():
     create matching bounce records in ListMonk."""
     try:
         result = await ingest_bounce_mailbox(listmonk)
-        spawn(update_hard_bounce_counts())
+        schedule_hard_bounce_update()
         return result
     except Exception as e:
         logger.error(f"bounce ingest failed: {e}", exc_info=True)
@@ -30,7 +36,8 @@ async def ingest_bounces():
 
 
 @router.get("")
-async def get_bounces(page: int = 1, per_page: int = 50,
+async def get_bounces(page: int = Query(1, ge=1, le=MAX_PAGE),
+                      per_page: int = Query(50, ge=1, le=MAX_PER_PAGE),
                       campaign_id: Optional[int] = None, source: str = "",
                       bounce_type: str = ""):
     return await fetch_filtered_bounces_page(
@@ -50,8 +57,8 @@ async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
         raise HTTPException(status_code=404, detail="No bounce records found")
 
     for b in all_bounces:
-        b["campaign_name"] = b.get("campaign", {}).get("name", "")
-        b["campaign_id"] = b.get("campaign", {}).get("id", "")
+        b["campaign_name"] = bounce_campaign_name(b)
+        b["campaign_id"] = bounce_campaign_id(b) or ""
 
     columns = ["id", "email", "campaign_id", "campaign_name", "type", "source", "created_at"]
     suffix = ""
@@ -69,7 +76,7 @@ async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
 @router.delete("/{bounce_id}")
 async def delete_bounce(bounce_id: int):
     res = await listmonk.delete_bounce(bounce_id)
-    spawn(update_hard_bounce_counts())
+    schedule_hard_bounce_update()
     return res
 
 
@@ -81,7 +88,7 @@ async def delete_all_bounces(campaign_id: Optional[int] = None,
     without campaign_id, delete all matching bounces. Otherwise delete all."""
     if not campaign_id and not bounce_type:
         res = await listmonk.delete_all_bounces()
-        spawn(update_hard_bounce_counts())
+        schedule_hard_bounce_update()
         return res
 
     all_bounces = await fetch_all_filtered_bounces(
@@ -107,5 +114,5 @@ async def delete_all_bounces(campaign_id: Optional[int] = None,
                 logger.error(f"Failed to delete bounce {bid}: {exc}")
 
     await asyncio.gather(*(_delete(bid) for bid in bounce_ids))
-    spawn(update_hard_bounce_counts())
+    schedule_hard_bounce_update()
     return {"deleted": deleted, "errors": errors, "campaign_id": campaign_id}

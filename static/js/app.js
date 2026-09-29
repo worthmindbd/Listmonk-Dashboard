@@ -41,9 +41,12 @@ const App = {
 
     route() {
         const hash = window.location.hash.slice(2) || 'dashboard';
-        const page = this.pages[hash];
+        // Own-property check: a plain lookup also resolves inherited keys, so
+        // "#/constructor" or "#/toString" would return a function and blow up
+        // with a confusing TypeError instead of redirecting to the dashboard.
+        const page = Object.hasOwn(this.pages, hash) ? this.pages[hash] : null;
 
-        if (!page) {
+        if (!page || typeof page.render !== 'function') {
             window.location.hash = '#/dashboard';
             return;
         }
@@ -399,7 +402,7 @@ const Templates = {
             await API.post('/api/templates', { name, body, type: 'campaign' });
             App.toast('Template created', 'success');
             this.render();
-        } catch { /* error already toasted by API */ }
+        } catch { /* API.request already surfaced the server message */ }
     },
 
     async update(id) {
@@ -410,7 +413,7 @@ const Templates = {
             await API.put(`/api/templates/${id}`, { name, body });
             App.toast('Template updated', 'success');
             this.render();
-        } catch {}
+        } catch { /* API.request already surfaced the server message */ }
     },
 
     async setDefault(id) {
@@ -418,7 +421,7 @@ const Templates = {
             await API.put(`/api/templates/${id}/default`);
             App.toast('Default template updated', 'success');
             this.render();
-        } catch {}
+        } catch { /* API.request already surfaced the server message */ }
     },
 
     async remove(id) {
@@ -427,7 +430,7 @@ const Templates = {
                 await API.del(`/api/templates/${id}`);
                 App.toast('Template deleted', 'success');
                 this.render();
-            } catch {}
+            } catch { /* API.request already surfaced the server message */ }
         }
     },
 };
@@ -554,9 +557,13 @@ const Bounces = {
     goToPage(p) { this.page = p; this.render(); },
 
     async remove(id) {
-        await API.del(`/api/bounces/${id}`);
-        App.toast('Bounce deleted', 'success');
-        this.render();
+        try {
+            await API.del(`/api/bounces/${id}`);
+            App.toast('Bounce deleted', 'success');
+            this.render();
+        } catch {
+            // API.request already surfaced the server message.
+        }
     },
 
     _campaignLabel() {

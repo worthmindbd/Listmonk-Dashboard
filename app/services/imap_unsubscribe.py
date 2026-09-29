@@ -10,6 +10,7 @@ import asyncio
 import imaplib
 import email
 import email.policy
+import email.utils
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,10 @@ from app.services.unsubscribe_log import (
 from app.services.imap_helpers import safe_email_for_query, imap_date, extract_email_body
 
 logger = logging.getLogger("imap_unsubscribe")
+
+# Safety cap when walking campaign history backwards for re-attribution.
+MAX_CAMPAIGN_PAGES = 20  # 2000 campaigns
+CAMPAIGN_PAGE_SIZE = 100
 
 UNSUBSCRIBE_KEYWORDS = [
     "remove me",
@@ -127,6 +132,22 @@ def _clean_subject(subject: str) -> str:
     return cleaned
 
 
+def _parse_campaign_dt(created: str) -> Optional[datetime]:
+    """Parse a ListMonk ``created_at`` string into an aware UTC datetime."""
+    if not created:
+        return None
+    try:
+        camp_date = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        if camp_date.tzinfo is None:
+            camp_date = camp_date.replace(tzinfo=timezone.utc)
+        return camp_date
+    except (ValueError, TypeError):
+        try:
+            return datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
+
 def _match_campaign(
     campaigns: list[dict],
     email_date: Optional[datetime] = None,
@@ -154,19 +175,9 @@ def _match_campaign(
     best_date = None
 
     for camp in campaigns:
-        created = camp.get("created_at", "")
-        if not created:
+        camp_date = _parse_campaign_dt(camp.get("created_at", ""))
+        if camp_date is None:
             continue
-        try:
-            clean_iso = created.replace("Z", "+00:00")
-            camp_date = datetime.fromisoformat(clean_iso)
-            if camp_date.tzinfo is None:
-                camp_date = camp_date.replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            try:
-                camp_date = datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError):
-                continue
 
         if camp_date > email_date:
             continue
@@ -238,6 +249,95 @@ def _prune_existing_records(records: list[dict], valid_cids: set) -> list[dict]:
         r for r in records
         if r.get("campaign_id") is None or r.get("campaign_id") in valid_cids
     ]
+
+
+def _oldest_pending_record_dt(records: list[dict]) -> Optional[datetime]:
+    """Oldest timestamp among email-source records still awaiting attribution."""
+    oldest = None
+    for r in records:
+        if r.get("source") != "email" or r.get("reattributed_at"):
+            continue
+        if not r.get("lists_removed"):
+            continue
+        ts = r.get("timestamp", "")
+        try:
+            rec_date = datetime.fromisoformat(ts) if ts else datetime.now(timezone.utc)
+        except (ValueError, TypeError):
+            continue
+        if rec_date.tzinfo is None:
+            rec_date = rec_date.replace(tzinfo=timezone.utc)
+        else:
+            rec_date = rec_date.astimezone(timezone.utc)
+        if oldest is None or rec_date < oldest:
+            oldest = rec_date
+    return oldest
+
+
+async def _fetch_campaign_history(client: ListMonkClient, cutoff: Optional[datetime]) -> tuple[list[dict], bool, bool]:
+    """Fetch campaigns newest-first, walking back until ``cutoff`` is covered.
+
+    Returns ``(campaigns, complete_all, covers_cutoff)``:
+
+    * ``complete_all`` — every campaign in ListMonk was fetched. Only then is
+      it safe to prune records whose campaign no longer exists.
+    * ``covers_cutoff`` — the fetched window provably contains every campaign
+      that could match a record at or after ``cutoff``. Re-attribution against
+      a truncated newest-first list would silently reassign old records to
+      whichever recent campaign happens to share a list, so it must be False
+      whenever we stopped early. When ``cutoff`` is None there is no pending
+      re-attribution work, so a single page is both cheap and safe.
+    """
+    if cutoff is None:
+        # Steady state: nothing left to re-attribute, so one page is enough
+        # for matching new replies. complete_all still lets pruning run for
+        # the common case of a campaign count that fits on one page.
+        try:
+            result = await client.get_campaigns(
+                page=1, per_page=CAMPAIGN_PAGE_SIZE,
+                order_by="created_at", order="DESC",
+            )
+        except Exception as e:
+            logger.error(f"[IMAP] Failed to fetch campaigns: {e}")
+            return [], False, False
+        data = result.get("data", {})
+        results = data.get("results", [])
+        complete = results and data.get("total", 0) <= len(results)
+        return results, bool(complete), True
+
+    campaigns: list[dict] = []
+    page = 1
+    while True:
+        try:
+            result = await client.get_campaigns(
+                page=page, per_page=CAMPAIGN_PAGE_SIZE,
+                order_by="created_at", order="DESC",
+            )
+        except Exception as e:
+            logger.error(f"[IMAP] Failed to fetch campaigns: {e}")
+            return campaigns, False, False
+
+        data = result.get("data", {})
+        results = data.get("results", [])
+        if not results:
+            return campaigns, True, True  # reached the end of history
+        campaigns.extend(results)
+
+        oldest_seen = None
+        for c in campaigns:
+            dt = _parse_campaign_dt(c.get("created_at", ""))
+            if dt is not None and (oldest_seen is None or dt < oldest_seen):
+                oldest_seen = dt
+        covers_cutoff = oldest_seen is not None and oldest_seen <= cutoff
+
+        if page >= MAX_CAMPAIGN_PAGES:
+            if not covers_cutoff:
+                logger.warning(
+                    f"[IMAP] Stopped campaign history at {MAX_CAMPAIGN_PAGES} pages "
+                    "without covering the oldest pending record; skipping "
+                    "re-attribution to avoid mis-assigning it"
+                )
+            return campaigns, False, covers_cutoff
+        page += 1
 
 
 def _reattribute_existing_records(
@@ -318,22 +418,24 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
         seen_after_persist: list = []
 
         try:
-            # Fetch campaigns FIRST to determine date filter
-            campaigns_complete = False
+            # Campaign history, newest first. One page is enough to match
+            # *new* replies; older pages are only needed to re-attribute
+            # records written before list-aware matching existed.
             try:
-                camp_result = await client.get_campaigns(
-                    page=1, per_page=100, order_by="created_at", order="DESC"
+                campaigns_list, campaigns_complete, covers_cutoff = (
+                    await _fetch_campaign_history(
+                        client, _oldest_pending_record_dt(load_log())
+                    )
                 )
-                campaigns_list = camp_result.get("data", {}).get("results", [])
-                campaigns_total = camp_result.get("data", {}).get("total", 0)
-                # Only the first page is fetched; pruning/removal is unsafe
-                # unless the list contains every campaign.
-                campaigns_complete = campaigns_total <= len(campaigns_list)
-                logger.info(f"[IMAP] Fetched {len(campaigns_list)} campaigns for matching")
+                logger.info(
+                    f"[IMAP] Fetched {len(campaigns_list)} campaigns for matching "
+                    f"(complete={campaigns_complete}, covers_cutoff={covers_cutoff})"
+                )
             except Exception as e:
-                logger.error(f"Failed to fetch campaigns: {e}")
                 logger.error(f"[IMAP] ERROR fetching campaigns: {e}")
                 campaigns_list = []
+                campaigns_complete = False
+                covers_cutoff = False
 
             # Backfill + prune must be atomic with respect to other writers
             # (link scanner, reset/delete endpoints) so no records are lost.
@@ -341,7 +443,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                 # Load log once and reuse across backfill, pruning, and dedup.
                 existing_log = load_log()
 
-                if campaigns_list:
+                if campaigns_list and covers_cutoff:
                     try:
                         changed, removed = _reattribute_existing_records(
                             existing_log, campaigns_list,
@@ -350,15 +452,12 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                         if changed or removed:
                             existing_log = [r for r in existing_log if not r.get("_remove")]
                             save_log(existing_log)
-                            if changed:
-                                logger.info(f"[IMAP] Re-attributed {changed} existing records")
-                                logger.info(f"Backfill: re-attributed {changed} existing records")
-                            if removed:
-                                logger.info(f"[IMAP] Removed {removed} unattributable records")
-                                logger.info(f"Backfill: removed {removed} unattributable records")
+                            logger.info(
+                                f"[IMAP] Backfill: re-attributed {changed}, "
+                                f"removed {removed} unattributable records"
+                            )
                     except Exception as e:
-                        logger.error(f"Backfill reattribution failed: {e}")
-                        logger.warning(f"[IMAP] Backfill error (non-fatal): {e}")
+                        logger.warning(f"[IMAP] Backfill reattribution failed (non-fatal): {e}")
 
                 # Prune records whose campaign no longer exists in ListMonk.
                 # Requires a *complete* campaign list, and never drops records
@@ -372,10 +471,8 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                             existing_log = pruned
                             save_log(existing_log)
                             logger.info(f"[IMAP] Pruned {removed_count} records for deleted campaigns")
-                            logger.info(f"Pruned {removed_count} records for deleted campaigns")
                     except Exception as e:
-                        logger.error(f"Campaign prune failed: {e}")
-                        logger.warning(f"[IMAP] Prune error (non-fatal): {e}")
+                        logger.warning(f"[IMAP] Campaign prune failed (non-fatal): {e}")
 
                 # Dedup sources (message ids from the log, emails from the
                 # persistent processed set that survives log deletion/clearing).
@@ -425,7 +522,6 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
             ids = msg_ids[0].split()
             scanned = len(ids)
             logger.info(f"[IMAP] Found {scanned} unseen emails in campaign period, scanning")
-            logger.info(f"IMAP scan: {scanned} unseen emails in campaign period")
 
             for msg_id in ids:
                 try:
@@ -465,7 +561,10 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     matched += 1
                     sender_email = _extract_sender_email(msg)
                     if not sender_email:
-                        logger.warning(f"Could not extract sender email from message")
+                        logger.warning(
+                            f"[IMAP] Could not extract sender email from "
+                            f"message {msg_id} ('{subject_preview}')"
+                        )
                         seen_skips.append(msg_id)
                         continue
 
@@ -477,15 +576,13 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                     matched_keyword = keyword_match.group(0).lower()
                     subject = msg.get("Subject", "(no subject)")
                     logger.info(f"[IMAP] Keyword match: {sender_email} ('{matched_keyword}')")
-                    logger.info(f"Unsubscribe match: {sender_email} (keyword: '{matched_keyword}')")
 
                     # Parse email date for campaign matching
                     email_date = None
                     date_str = msg.get("Date", "")
                     if date_str:
                         try:
-                            from email.utils import parsedate_to_datetime
-                            dt = parsedate_to_datetime(date_str)
+                            dt = email.utils.parsedate_to_datetime(date_str)
                             if dt.tzinfo is not None:
                                 email_date = dt.astimezone(timezone.utc)
                             else:
@@ -523,8 +620,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                             campaigns_list, email_date, set(sub_lists)
                         )
                         if not campaign:
-                            logger.info(f"[IMAP] No list-matched campaign for {sender_email}, skipping")
-                            logger.info(f"No list-matched campaign for '{subject}' from {sender_email}; skipping")
+                            logger.info(f"[IMAP] No list-matched campaign for '{subject}' from {sender_email}; skipping")
                             seen_skips.append(msg_id)
                             continue
 

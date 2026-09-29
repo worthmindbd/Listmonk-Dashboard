@@ -30,7 +30,7 @@ Listmonk-Dashboard/
 │       ├── bounce_list.py         # Paginated bounce listing with opener exclusion & cache integration
 │       ├── campaign_scheduler.py  # Timezone-aware send window scheduler (auto-pause/auto-resume)
 │       ├── csv_converter.py       # Converts arbitrary CSV to ListMonk schema (JSON attributes)
-│       ├── export_service.py      # Streaming CSV generator for memory-efficient exports
+│       ├── export_service.py      # CSV generators (sync list + async streamed)
 │       ├── hard_bounce_cache.py   # In-memory hard bounce counts per campaign with background refresh
 │       ├── imap_helpers.py        # Shared IMAP utilities (body extraction, date formatting, query escaping)
 │       ├── imap_unsubscribe.py    # IMAP reply monitor for unsubscribe keywords with quote stripping
@@ -64,6 +64,11 @@ Listmonk-Dashboard/
 │   ├── test_bounce_classify.py    # RFC 3463 bounce classifier unit tests
 │   ├── test_bounce_filters.py     # Opener exclusion & false positive filter tests
 │   ├── test_link_unsubscribe.py   # Link unsubscribe scanner & dedup tests
+│   ├── test_bounce_list.py        # Bounce pagination + type filtering
+│   ├── test_campaign_scheduler.py # Send-window logic
+│   ├── test_csv_converter.py      # Encoding/delimiter/column detection
+│   ├── test_review_fixes.py       # Regression tests for the full-codebase review
+│   ├── conftest.py                # Resets module-level caches between tests
 │   └── test_regressions.py        # Route order, IMAP seen-marking, prune, timestamp regressions
 ├── .github/
 │   └── workflows/
@@ -104,13 +109,19 @@ Listmonk-Dashboard/
 - Provides `paginate_all()` utility to automatically traverse paginated ListMonk endpoints with configurable page size.
 
 ### 2. Authentication & Middleware (`app/auth.py`, `app/main.py`)
-- HMAC-SHA256 signed session cookies (`SESSION_SECRET`). If `SESSION_SECRET` is omitted, auto-generates a secure 32-byte secret.
+- HMAC-SHA256 signed session cookies (`SESSION_SECRET`). If `SESSION_SECRET` is omitted, auto-generates a secure 32-byte secret and persists it to `DATA_DIR/session_secret.key` (chmod 600, git- and docker-ignored).
 - 7-day session expiration.
 - `AuthMiddleware` intercepts all requests:
   - Whitelisted paths: `/auth/login`, `/auth/logout`, `/favicon.ico`, `/static/*`.
+  - `Strict-Transport-Security` is added only when the request arrived over TLS
+    (directly or via `X-Forwarded-Proto`), so plain-HTTP dev is not poisoned.
   - Unauthenticated `/api/*` requests receive `401 Unauthorized`.
   - Unauthenticated HTML page requests redirect (`302`) to `/auth/login`.
 - Login is rate-limited per client IP (10 failed attempts / 15 minutes → `429`).
+  The IP comes from `X-Forwarded-For` only when the immediate peer is loopback/private,
+  or when `TRUST_PROXY=true` — otherwise a spoofed header would let an attacker
+  reset the limiter on every attempt. Credential comparison encodes to UTF-8 first
+  so non-ASCII input is a normal `401` rather than a `500`.
 - `SecurityHeadersMiddleware` sets `X-Content-Type-Options`, `Referrer-Policy`, and `X-Frame-Options` on every response.
 
 ### 3. Bounce Ingestion & Smart Filtering
@@ -125,7 +136,13 @@ Listmonk-Dashboard/
 - **Hard Bounce Cache** (`app/services/hard_bounce_cache.py`):
   - In-memory cache of true hard bounce counts per campaign, refreshed on startup and every 5 minutes in background. Overrides ListMonk's raw bounce count in campaign lists once the first refresh completes.
 - **Fast Filtered Listing** (`app/services/bounce_list.py`):
-  - Fast-path pagination and CSV exports with opener exclusion, using a semaphore (`CHECK_CONCURRENCY=25`) for single-query bounce validation.
+  - Fast-path pagination and CSV exports with opener exclusion. On a cold opener
+    cache, batches larger than `COLD_CACHE_EMAIL_THRESHOLD` (20) fetch the
+    campaign's full opener set rather than one query per bounce — that also warms
+    `opener_cache`, so later pages are in-memory lookups. Small batches still use
+    the per-email path under a `CHECK_CONCURRENCY=25` semaphore.
+  - Tolerates ListMonk's `"campaign": null` (subscriber-level bounces); never uses
+    chained `.get("campaign", {}).get(...)`, which breaks on an explicit null.
 
 ### 4. Dual-Source Unsubscribe Engine
 - **IMAP Unsubscribe Monitor** (`app/services/imap_unsubscribe.py`):
@@ -168,7 +185,7 @@ All background tasks run as managed `asyncio.create_task` loops in `app/main.py`
 | Category | Endpoint | Method | Description |
 |----------|----------|--------|-------------|
 | **Auth** | `/auth/login` | GET / POST | Login page / authenticate session |
-| | `/auth/logout` | GET | End session & redirect |
+| | `/auth/logout` | POST | End session & redirect (POST-only: a GET would be a forced-logout CSRF) |
 | **Subscribers** | `/api/subscribers` | GET | Paginated subscribers with search/query/list filter |
 | | `/api/subscribers/export-all` | GET | Stream all subscribers as CSV |
 | | `/api/subscribers/import/status` | GET | Get subscriber import status |
@@ -244,6 +261,11 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 1. **Never make up file paths** — verify existing files before editing.
 2. **Never break existing comments and docstrings** — preserve documentation integrity.
 3. **Escaping ListMonk SQL queries** — use `safe_email_for_query` from `imap_helpers.py` when passing user input to ListMonk queries.
-4. **Memory efficiency** — use `dict_list_to_csv` from `export_service.py` with `StreamingResponse` for CSV exports rather than buffering huge strings.
-5. **Thread/Async Safety** — always use `asyncio.Lock` when modifying shared mutable resources (`_INGEST_LOCK`, `_scan_lock`, `_log_lock`).
-6. **Multi-Instance Support** — respect `DATA_DIR` so changes remain compatible with multi-instance deployments (`docker-compose.instance2.yml`).
+4. **Memory efficiency** — for CSV exports, prefer `aiter_dicts_to_csv` from `export_service.py` fed by `listmonk.iter_pages(...)` so rows stream one page at a time. `dict_list_to_csv` still buffers its input list, so only use it when the dataset is already materialised (e.g. after in-process filtering).
+5. **Bound pagination inputs** — every endpoint taking `page`/`per_page` must declare `Query(..., ge=1, le=MAX)`. Bounce listing is the expensive one: serving page N scans every preceding record, so an unbounded `per_page` multiplies into tens of thousands of ListMonk queries.
+6. **Never chain `.get(k, {}).get(...)`** on ListMonk response fields that can be explicitly null (notably `bounce["campaign"]`). Use the helpers in `bounce_filters.py` (`bounce_campaign_id` / `bounce_campaign_name`).
+7. **Failed actions return a status code** — raise `HTTPException` rather than returning `200 {"error": ...}`, so monitoring and the frontend can distinguish success from failure. The one exception is `/api/auto-unblock/status`, which degrades to a `200` with an `error` field because the Settings page loads it via `Promise.all`.
+8. **Thread/Async Safety** — always use `asyncio.Lock` when modifying shared mutable resources (`_INGEST_LOCK`, `_scan_lock`, `_log_lock`).
+9. **Multi-Instance Support** — respect `DATA_DIR` so changes remain compatible with multi-instance deployments (`docker-compose.instance2.yml`).
+10. **Frontend error contract** — `API.request` toasts server errors once and marks the rejection `err.handled = true`. Callers must not toast again; wrap mutating handlers in `try/catch` or the promise rejection is unhandled.
+11. **Module-level caches** — any service cache in a module global needs an invalidation hook and must be reset by `tests/conftest.py`, or tests leak state into each other.

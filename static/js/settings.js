@@ -64,6 +64,25 @@ const Settings = {
     },
 
     // ── Scheduler Tab ────────────────────────────────────
+    /**
+     * Percentage offsets for the send-window band on a 0-100% day timeline.
+     * An overnight window (e.g. 20:00 -> 08:00) wraps past midnight, so it is
+     * drawn as two segments — emitting left/right for the raw times yields a
+     * negative width and the band disappears.
+     */
+    _windowSegments(startHour, startMinute, endHour, endMinute) {
+        const startPct = (startHour * 60 + startMinute) / 1440 * 100;
+        const endPct = (endHour * 60 + endMinute) / 1440 * 100;
+        if (endPct > startPct) {
+            return [{ left: startPct, width: endPct - startPct }];
+        }
+        // Overnight: [start -> 24:00] and [00:00 -> end]
+        return [
+            { left: startPct, width: 100 - startPct },
+            { left: 0, width: endPct },
+        ];
+    },
+
     renderScheduler() {
         const s = this.schedule;
         const enabled = s.enabled;
@@ -188,12 +207,15 @@ const Settings = {
                 <div style="margin-top:24px;margin-bottom:24px">
                     <label style="font-size:0.85rem;font-weight:500;color:var(--text-secondary);margin-bottom:10px;display:block">Daily Timeline</label>
                     <div style="position:relative;height:44px;background:var(--bg-input);border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--glass-border)">
-                        <div style="position:absolute;left:${(s.start_hour * 60 + s.start_minute) / 1440 * 100}%;right:${100 - (s.end_hour * 60 + s.end_minute) / 1440 * 100}%;top:0;bottom:0;background:rgba(16,185,129,0.2);border-left:2px solid var(--emerald);border-right:2px solid var(--emerald)"></div>
+                        ${this._windowSegments(s.start_hour, s.start_minute, s.end_hour, s.end_minute).map(seg => `
+                            <div style="position:absolute;left:${seg.left}%;width:${seg.width}%;top:0;bottom:0;background:rgba(16,185,129,0.2);border-left:2px solid var(--emerald);border-right:2px solid var(--emerald)"></div>
+                        `).join('')}
                         ${this.renderTimeMarkers()}
                     </div>
                     <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--text-muted);margin-top:6px;padding:0 2px">
                         <span>12AM</span><span>3AM</span><span>6AM</span><span>9AM</span><span>12PM</span><span>3PM</span><span>6PM</span><span>9PM</span><span>12AM</span>
                     </div>
+                    ${(s.start_hour * 60 + s.start_minute) > (s.end_hour * 60 + s.end_minute) ? '<p style="font-size:0.75rem;color:var(--text-muted);margin-top:6px">Overnight window — the band wraps past midnight.</p>' : ''}
                 </div>
 
                 <div class="form-actions">
@@ -219,23 +241,25 @@ const Settings = {
     // ── Auto-Unblock Tab ─────────────────────────────────
     renderAutoUnblock() {
         const u = this.unblockStatus || {};
+        const failed = Boolean(u.error);
         const count = u.blocklisted_engaged ?? u.blocklisted_clickers ?? 0;
         const interval = u.interval_hours || 6;
+        const statusBadge = failed
+            ? `<span class="badge badge-danger" style="font-size:0.9rem;padding:6px 14px" title="${App.escapeHtml(u.error)}">Status unavailable</span>`
+            : count > 0
+                ? `<span class="badge badge-warning" style="font-size:0.9rem;padding:6px 14px">${count} blocklisted engaged subscriber(s) found</span>`
+                : '<span class="badge badge-success" style="font-size:0.9rem;padding:6px 14px">All clear</span>';
 
         return `
             <div class="card" style="margin-bottom:20px">
                 <div class="card-header">
                     <h3 class="card-title">Auto-Unblock Status</h3>
-                    <div class="action-btns">
-                        ${count > 0
-                            ? `<span class="badge badge-warning" style="font-size:0.9rem;padding:6px 14px">${count} blocklisted engaged subscriber(s) found</span>`
-                            : '<span class="badge badge-success" style="font-size:0.9rem;padding:6px 14px">All clear</span>'}
-                    </div>
+                    <div class="action-btns">${statusBadge}</div>
                 </div>
                 <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
                     <div>
                         <span style="color:var(--text-muted);font-size:0.85rem">Blocklisted engaged:</span>
-                        <strong style="color:${count > 0 ? 'var(--warning)' : 'var(--success)'}">${count}</strong>
+                        <strong style="color:${failed ? 'var(--text-muted)' : (count > 0 ? 'var(--warning)' : 'var(--success)')}">${failed ? '—' : count}</strong>
                     </div>
                     <div>
                         <span style="color:var(--text-muted);font-size:0.85rem">Auto-check interval:</span>
@@ -294,7 +318,7 @@ const Settings = {
             this.schedule = await API.get('/api/scheduler');
             this.renderTab();
         } catch {
-            App.toast('Failed to update scheduler', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -318,24 +342,20 @@ const Settings = {
             this.schedule = await API.get('/api/scheduler');
             this.renderTab();
         } catch {
-            App.toast('Failed to save schedule', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
     async runSchedulerNow() {
         try {
             const result = await API.post('/api/scheduler/run');
-            if (result.error) {
-                App.toast(result.error, 'error');
-            } else {
-                const status = result.in_send_window ? 'Inside send window' : 'Outside send window';
-                const paused = result.auto_paused_campaigns?.length || 0;
-                App.toast(`${status} | ${paused} campaign(s) auto-paused`, 'info');
-                this.schedule = await API.get('/api/scheduler');
-                this.renderTab();
-            }
+            const status = result.in_send_window ? 'Inside send window' : 'Outside send window';
+            const paused = result.auto_paused_campaigns?.length || 0;
+            App.toast(`${status} | ${paused} campaign(s) auto-paused`, 'info');
+            this.schedule = await API.get('/api/scheduler');
+            this.renderTab();
         } catch {
-            App.toast('Failed to run scheduler', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -349,9 +369,7 @@ const Settings = {
 
         try {
             const result = await API.post('/api/auto-unblock/run');
-            if (result.error) {
-                resultEl.innerHTML = `<div class="badge badge-danger" style="padding:8px 14px">${App.escapeHtml(result.error)}</div>`;
-            } else if (result.success === 0 && result.failed === 0) {
+            if (result.success === 0 && result.failed === 0) {
                 resultEl.innerHTML = '<div class="badge badge-success" style="padding:8px 14px">No blocklisted engaged subscribers found - all clear!</div>';
             } else {
                 let html = `<div class="badge badge-success" style="padding:8px 14px">${result.success} unblocked, ${result.failed} failed</div>`;
@@ -365,10 +383,12 @@ const Settings = {
             // Refresh status
             this.unblockStatus = await API.get('/api/auto-unblock/status');
         } catch {
-            resultEl.innerHTML = '<div class="badge badge-danger" style="padding:8px 14px">Failed to run auto-unblock</div>';
+            // API.request already surfaced the server message; reflect it inline.
+            resultEl.innerHTML = '<div class="badge badge-danger" style="padding:8px 14px">Auto-unblock run failed — see the notification above</div>';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Run Auto-Unblock Now';
         }
-        btn.disabled = false;
-        btn.textContent = 'Run Auto-Unblock Now';
     },
 
     // ── Auto-refresh ─────────────────────────────────────

@@ -1,11 +1,16 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from app.services.listmonk_client import listmonk
 
 router = APIRouter()
 
+# Pagination bounds (the UI requests at most 100).
+MAX_PAGE = 100
+MAX_PER_PAGE = 200
+
 
 @router.get("")
-async def get_lists(page: int = 1, per_page: int = 50,
+async def get_lists(page: int = Query(1, ge=1, le=MAX_PAGE),
+                    per_page: int = Query(50, ge=1, le=MAX_PER_PAGE),
                     query: str = "", status: str = "",
                     order_by: str = "created_at", order: str = "DESC",
                     minimal: bool = False):

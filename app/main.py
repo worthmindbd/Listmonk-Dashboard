@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -24,16 +26,36 @@ from app.services.campaign_scheduler import (
 from app.services.imap_unsubscribe import scan_and_unsubscribe
 from app.services.link_unsubscribe import scan_link_unsubscribes
 from app.services.bounce_ingest import ingest_bounce_mailbox
-from app.services.hard_bounce_cache import start_cache_updater, update_hard_bounce_counts
+from app.services.hard_bounce_cache import start_cache_updater, schedule_hard_bounce_update
 from app.auth import (
     verify_session, create_session, clear_session, check_credentials,
     is_login_rate_limited, record_login_failure, clear_login_failures,
+    client_ip_from_request,
 )
 from app.services.task_utils import spawn, shutdown as shutdown_tasks
 from app.routers import subscribers, lists, campaigns, templates, bounces, converter, unsubscribes
 
 logger = logging.getLogger("listmonk-dashboard")
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# The app logs through named loggers all over (scan results, prune counts,
+# scheduler ticks, bounce classification) but uvicorn only configures its own
+# loggers — without this every logger.info() is discarded and the diagnostics
+# are invisible. Idempotent so a --reload reload does not stack handlers.
+def _configure_logging() -> None:
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+        ))
+        root.addHandler(handler)
+    root.setLevel(level)
+
+
+_configure_logging()
 
 AUTO_UNBLOCK_INTERVAL = 6 * 60 * 60
 IMAP_SCAN_INTERVAL = 60 * 60  # 1 hour
@@ -47,6 +69,13 @@ _hard_bounce_cache_task = None
 
 # ── Auth Middleware ───────────────────────────────────────
 
+def _is_https(request: Request) -> bool:
+    """True when the client reached us over TLS, directly or via a proxy."""
+    if request.url.scheme == "https":
+        return True
+    return request.headers.get("x-forwarded-proto", "").lower() == "https"
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attach baseline security headers to every response."""
 
@@ -55,6 +84,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "same-origin")
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        # HSTS is only meaningful (and only safe) over TLS — sending it on a
+        # plain-HTTP dev instance would make browsers refuse to ever retry.
+        if _is_https(request):
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
         return response
 
 
@@ -122,7 +157,7 @@ async def bounce_ingest_loop():
                     f"Bounce ingest: {result['ingested']} ingested "
                     f"(hard={result.get('hard', 0)}, soft={result.get('soft', 0)})"
                 )
-                spawn(update_hard_bounce_counts())
+                schedule_hard_bounce_update()
         except Exception as e:
             logger.error(f"Bounce ingest error: {e}")
         await asyncio.sleep(BOUNCE_INGEST_INTERVAL)
@@ -193,7 +228,7 @@ async def login_page(request: Request):
 
 @app.post("/auth/login")
 async def login(request: Request):
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_from_request(request)
     if is_login_rate_limited(client_ip):
         raise HTTPException(
             status_code=429,
@@ -220,11 +255,20 @@ async def login(request: Request):
     return response
 
 
-@app.get("/auth/logout")
+# Logout is state-changing, so it is POST-only. A GET would be triggerable by
+# any cross-site <img>/<link> — SameSite=Lax still sends the cookie on
+# top-level navigations, so a GET logout is a trivial forced-logout vector.
+@app.post("/auth/logout")
 async def logout(request: Request):
-    response = RedirectResponse("/auth/login", status_code=302)
+    response = RedirectResponse("/auth/login", status_code=303)
     clear_session(response, request)
     return response
+
+
+# Kept for bookmarks/legacy links, but only after an explicit user action.
+@app.get("/auth/logout")
+async def logout_redirect(request: Request):
+    return RedirectResponse("/", status_code=302)
 
 
 # ── Favicon & Dashboard ───────────────────────────────────
@@ -243,6 +287,9 @@ async def index(request: Request):
 
 @app.get("/api/auto-unblock/status")
 async def auto_unblock_status():
+    # Deliberately not a 5xx: the Settings page loads this alongside the
+    # scheduler with Promise.all, so raising here would blank the whole page
+    # when only this readout is unavailable. The client renders `error`.
     try:
         result = await listmonk.get_subscribers(1, 1, QUERY_BLOCKLISTED_ENGAGED)
         total = result.get("data", {}).get("total", 0)
@@ -252,7 +299,13 @@ async def auto_unblock_status():
             "interval_hours": AUTO_UNBLOCK_INTERVAL // 3600,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"auto-unblock status failed: {e}")
+        return {
+            "error": str(e),
+            "blocklisted_engaged": 0,
+            "blocklisted_clickers": 0,
+            "interval_hours": AUTO_UNBLOCK_INTERVAL // 3600,
+        }
 
 
 @app.post("/api/auto-unblock/run")
@@ -263,7 +316,8 @@ async def auto_unblock_run_now():
             return {"success": 0, "failed": 0, "unblocked": [], "message": "No blocklisted engaged subscribers found"}
         return await unblock_subscribers(listmonk, subs)
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"auto-unblock run failed: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Auto-unblock failed: {e}")
 
 
 # ── Campaign Scheduler Endpoints ─────────────────────────
@@ -319,7 +373,18 @@ async def update_schedule(data: dict):
             if day_str not in day_abbr_map:
                 raise HTTPException(status_code=400, detail=f"Invalid day in days list: {day}")
             normalized_days.append(day_abbr_map[day_str])
+        # An empty day set means no time is ever inside the window, so every
+        # running campaign would be auto-paused and never resumed. Reject it
+        # instead of silently stopping all sending.
+        if not normalized_days:
+            raise HTTPException(
+                status_code=400,
+                detail="days must contain at least one weekday",
+            )
         data["days"] = normalized_days
+
+    if "enabled" in data and not isinstance(data["enabled"], bool):
+        raise HTTPException(status_code=400, detail="enabled must be a boolean")
 
     schedule = load_schedule()
     for key in ["enabled", "timezone", "start_hour", "start_minute",
@@ -343,13 +408,14 @@ async def update_schedule(data: dict):
 async def scheduler_run_now():
     try:
         await run_scheduler_tick(listmonk)
-        schedule = load_schedule()
-        return {
-            "status": "ok",
-            "in_send_window": is_within_send_window(schedule),
-            "auto_paused_campaigns": schedule.get("auto_paused_campaigns", []),
-        }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"scheduler run failed: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Scheduler run failed: {e}")
+    schedule = load_schedule()
+    return {
+        "status": "ok",
+        "in_send_window": is_within_send_window(schedule),
+        "auto_paused_campaigns": schedule.get("auto_paused_campaigns", []),
+    }
 
 

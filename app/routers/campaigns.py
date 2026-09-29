@@ -1,10 +1,10 @@
 import json
 import time
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from typing import Optional
 from app.services.listmonk_client import listmonk
-from app.services.export_service import dict_list_to_csv
+from app.services.export_service import dict_list_to_csv, aiter_dicts_to_csv
 from app.services.bounce_filters import campaign_views_query
 from app.services.bounce_list import fetch_all_filtered_bounces, fetch_filtered_bounces_page
 from app.services.hard_bounce_cache import (
@@ -12,6 +12,15 @@ from app.services.hard_bounce_cache import (
 )
 
 router = APIRouter()
+
+# Pagination bounds. The UI never requests more than 500, and an unbounded
+# per_page turns a single request into a full-table scan in ListMonk.
+MAX_PAGE = 100
+MAX_PER_PAGE = 500
+
+# Export streams pages lazily; cap the walk so a misbehaving API cannot hold
+# the connection open indefinitely. 100 pages x 100 rows = 10k campaigns.
+EXPORT_MAX_PAGES = 100
 
 # Short-lived cache for the all-campaigns summary (paginates the entire
 # campaign history, so avoid repeating it on every dashboard/analytics load).
@@ -33,7 +42,8 @@ def _engagement_query(campaign_id: int, engagement_type: str) -> str | None:
 
 
 @router.get("")
-async def get_campaigns(page: int = 1, per_page: int = 50,
+async def get_campaigns(page: int = Query(1, ge=1, le=MAX_PAGE),
+                        per_page: int = Query(50, ge=1, le=MAX_PER_PAGE),
                         query: str = "", status: str = "",
                         order_by: str = "created_at", order: str = "DESC"):
     result = await listmonk.get_campaigns(page, per_page, query, status,
@@ -86,23 +96,34 @@ async def export_campaign_analytics(analytics_type: str,
 
 @router.get("/export-all")
 async def export_all_campaigns():
-    """Export all campaigns summary as CSV."""
-    all_campaigns = await listmonk.paginate_all(
-        listmonk.get_campaigns, per_page=100,
-    )
-    if not all_campaigns:
+    """Stream the full campaign history as CSV, page by page."""
+    columns = ["id", "name", "subject", "status", "type", "to_send", "sent",
+               "views", "clicks", "bounces", "created_at", "started_at"]
+
+    hard_counts_ready = _hard_counts_ready()
+    hard_counts = get_all_hard_bounce_counts() if hard_counts_ready else {}
+
+    async def rows():
+        async for c in listmonk.iter_pages(
+            listmonk.get_campaigns, per_page=100, max_pages=EXPORT_MAX_PAGES,
+        ):
+            if hard_counts_ready:
+                c["bounces"] = hard_counts.get(c.get("id"), 0)
+            yield c
+
+    stream = rows()
+    try:
+        first = await anext(stream)
+    except StopAsyncIteration:
         raise HTTPException(status_code=404, detail="No campaigns found")
 
-    if _hard_counts_ready():
-        hard_counts = get_all_hard_bounce_counts()
-        for c in all_campaigns:
-            cid = c.get("id")
-            c["bounces"] = hard_counts.get(cid, 0)
+    async def with_first():
+        yield first
+        async for c in stream:
+            yield c
 
-    columns = ["id", "name", "subject", "status", "type", "to_send", "sent",
-                "views", "clicks", "bounces", "created_at", "started_at"]
     return StreamingResponse(
-        dict_list_to_csv(all_campaigns, columns),
+        aiter_dicts_to_csv(with_first(), columns),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=campaigns_export.csv"},
     )
@@ -151,7 +172,8 @@ async def get_campaigns_summary():
 
 @router.get("/{campaign_id}/subscribers/{engagement_type}")
 async def get_campaign_subscribers(campaign_id: int, engagement_type: str,
-                                   page: int = 1, per_page: int = 50):
+                                   page: int = Query(1, ge=1, le=MAX_PAGE),
+                                   per_page: int = Query(50, ge=1, le=MAX_PER_PAGE)):
     """Get subscribers who viewed/clicked/bounced for a campaign."""
     if engagement_type == "bounces":
         return await fetch_filtered_bounces_page(

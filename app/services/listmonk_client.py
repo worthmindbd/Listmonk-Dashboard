@@ -1,6 +1,10 @@
+import logging
+
 import httpx
 from typing import Any, Optional
 from app.config import settings
+
+logger = logging.getLogger("listmonk_client")
 
 
 class ListMonkClient:
@@ -36,29 +40,50 @@ class ListMonkClient:
         resp.raise_for_status()
         return resp
 
-    async def paginate_all(self, fetch_fn, per_page: int = 500, **kwargs) -> list[dict]:
+    async def paginate_all(self, fetch_fn, per_page: int = 500, max_pages: int = 0, **kwargs) -> list[dict]:
         """Fetch all pages of a paginated endpoint into a single list.
 
         Args:
             fetch_fn: An async callable accepting page and per_page kwargs,
                 e.g. ``self.get_bounces``. Must return ``{"data": {"results": [...], "total": N}}``.
             per_page: Page size for each request.
+            max_pages: Optional hard cap on requests. 0 means unlimited. A cap
+                prevents an endpoint that keeps returning rows from looping
+                forever; a truncated result is logged rather than silently used.
             **kwargs: Additional keyword arguments forwarded to fetch_fn.
         """
+        items = []
+        async for item in self.iter_pages(fetch_fn, per_page=per_page, max_pages=max_pages, **kwargs):
+            items.append(item)
+        return items
+
+    async def iter_pages(self, fetch_fn, per_page: int = 500, max_pages: int = 0, **kwargs):
+        """Yield items from a paginated endpoint one page at a time.
+
+        Unlike ``paginate_all`` this never holds more than one page in memory,
+        which is what makes large exports streamable. Stops on an empty page,
+        once ``total`` is satisfied, or after ``max_pages`` requests.
+        """
         page = 1
-        all_items: list[dict] = []
         while True:
             result = await fetch_fn(page=page, per_page=per_page, **kwargs)
             data = result.get("data", {})
             results = data.get("results", [])
             if not results:
-                break
-            all_items.extend(results)
+                return
+            for item in results:
+                yield item
+
             total = data.get("total")
             if isinstance(total, (int, float)) and page * per_page >= total:
-                break
+                return
+            if max_pages and page >= max_pages:
+                logger.warning(
+                    "Pagination stopped at %d pages (%d items collected, total=%s)",
+                    max_pages, page * per_page, total,
+                )
+                return
             page += 1
-        return all_items
 
     # ── Subscribers ──────────────────────────────────────────
 

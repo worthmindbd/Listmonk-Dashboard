@@ -194,7 +194,7 @@ const Converter = {
             this.step = 2;
             this.renderStep();
         } catch {
-            App.toast('Failed to process file', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -262,7 +262,7 @@ const Converter = {
                 }
             }
         } catch {
-            App.toast('Conversion failed', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -325,7 +325,7 @@ const Converter = {
             // Show import status
             this.pollImportStatus();
         } catch {
-            App.toast('Import failed', 'error');
+            // API.request already surfaced the server message.
         }
     },
 

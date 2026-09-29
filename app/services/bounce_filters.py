@@ -21,8 +21,18 @@ def _normalize_email(email: str) -> str:
 
 
 def bounce_campaign_id(bounce: dict) -> int | None:
-    cid = bounce.get("campaign", {}).get("id")
+    # ListMonk returns "campaign": null for subscriber-initiated bounces, so
+    # the key can be present with a None value — .get("campaign", {}) would
+    # hand back None and blow up on the chained .get().
+    campaign = bounce.get("campaign") or {}
+    cid = campaign.get("id")
     return int(cid) if cid else None
+
+
+def bounce_campaign_name(bounce: dict) -> str:
+    """Return the attributed campaign name, or "" when unattributed."""
+    campaign = bounce.get("campaign") or {}
+    return campaign.get("name") or ""
 
 
 async def get_campaign_opener_emails(

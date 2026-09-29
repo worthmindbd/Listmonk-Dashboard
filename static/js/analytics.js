@@ -520,7 +520,7 @@ const Analytics = {
                 App.toast(`${type} chart data exported`, 'success');
             }
         } catch {
-            App.toast(`Failed to export ${type} data`, 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -541,7 +541,7 @@ const Analytics = {
                 App.toast(`${labels[type] || type} list exported`, 'success');
             }
         } catch {
-            App.toast(`Failed to export ${labels[type] || type}`, 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -591,7 +591,7 @@ const Analytics = {
                 App.toast('Campaigns summary exported', 'success');
             }
         } catch {
-            App.toast('Failed to export campaigns', 'error');
+            // API.request already surfaced the server message.
         }
     },
 };

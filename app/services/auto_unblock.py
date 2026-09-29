@@ -103,8 +103,8 @@ async def unblock_subscribers(client: ListMonkClient, subscribers: list[dict]) -
         bounces_deleted = await delete_bounce_records_for_subscribers(client, unblocked_ids)
         logger.info(f"Deleted {bounces_deleted} bounce records")
         if bounces_deleted > 0:
-            from app.services.hard_bounce_cache import update_hard_bounce_counts
-            spawn(update_hard_bounce_counts())
+            from app.services.hard_bounce_cache import schedule_hard_bounce_update
+            schedule_hard_bounce_update()
     else:
         bounces_deleted = 0
 

@@ -172,13 +172,17 @@ const Campaigns = {
         if (!name || !subject) { App.toast('Name and subject are required', 'error'); return; }
         if (!selectedLists.length) { App.toast('Select at least one list', 'error'); return; }
 
-        await API.post('/api/campaigns', {
-            name, subject, body, content_type: contentType,
-            type: 'regular', lists: selectedLists,
-            template_id: templateId, tags,
-        });
-        App.toast('Campaign created', 'success');
-        this.render();
+        try {
+            await API.post('/api/campaigns', {
+                name, subject, body, content_type: contentType,
+                type: 'regular', lists: selectedLists,
+                template_id: templateId, tags,
+            });
+            App.toast('Campaign created', 'success');
+            this.render();
+        } catch {
+            // API.request already surfaced the server message.
+        }
     },
 
     async showDetail(id) {
@@ -252,7 +256,7 @@ const Campaigns = {
                 </div>
             `);
         } catch {
-            App.toast('Failed to load campaign', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -323,7 +327,7 @@ const Campaigns = {
                 </div>
             `);
         } catch {
-            App.toast('Failed to load campaign', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
@@ -335,17 +339,25 @@ const Campaigns = {
         const lists = Array.from(document.querySelectorAll('input[name="editCampLists"]:checked'))
             .map(cb => parseInt(cb.value));
 
-        await API.put(`/api/campaigns/${id}`, { name, subject, body, lists, tags });
-        App.toast('Campaign updated', 'success');
-        this.showDetail(id);
+        try {
+            await API.put(`/api/campaigns/${id}`, { name, subject, body, lists, tags });
+            App.toast('Campaign updated', 'success');
+            this.showDetail(id);
+        } catch {
+            // API.request already surfaced the server message.
+        }
     },
 
     async changeStatus(id, status) {
         const action = status === 'running' ? 'start' : status;
         if (await App.confirm('Change Status', `Are you sure you want to ${action} this campaign?`)) {
-            await API.put(`/api/campaigns/${id}/status`, { status });
-            App.toast(`Campaign ${action}ed`, 'success');
-            this.render();
+            try {
+                await API.put(`/api/campaigns/${id}/status`, { status });
+                App.toast(`Campaign ${action}ed`, 'success');
+                this.render();
+            } catch {
+                // API.request already surfaced the server message.
+            }
         }
     },
 
@@ -359,15 +371,19 @@ const Campaigns = {
                 <iframe class="preview-frame" sandbox="" srcdoc="${App.escapeHtml(result.html)}"></iframe>
             `);
         } catch {
-            App.toast('Failed to load preview', 'error');
+            // API.request already surfaced the server message.
         }
     },
 
     async remove(id) {
         if (await App.confirm('Delete Campaign', 'Are you sure you want to delete this campaign?')) {
-            await API.del(`/api/campaigns/${id}`);
-            App.toast('Campaign deleted', 'success');
-            this.render();
+            try {
+                await API.del(`/api/campaigns/${id}`);
+                App.toast('Campaign deleted', 'success');
+                this.render();
+            } catch {
+                // API.request already surfaced the server message.
+            }
         }
     },
 
@@ -380,7 +396,7 @@ const Campaigns = {
                 App.toast('Campaigns exported', 'success');
             }
         } catch {
-            App.toast('Export failed', 'error');
+            // API.request already surfaced the server message.
         }
     },
 };

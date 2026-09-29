@@ -107,6 +107,18 @@ async def run_scheduler_tick(client: ListMonkClient):
     if not schedule.get("enabled"):
         return
 
+    # A schedule with no usable days is never "in window", which would make
+    # this tick pause every running campaign and never resume any of them.
+    # The API rejects an empty day list, so this only guards a hand-edited or
+    # corrupted schedule file — skip the tick rather than stall all sending.
+    day_map = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+    if not day_map.intersection(schedule.get("days", [])):
+        logger.error(
+            "Schedule has no valid days configured; skipping this tick so "
+            "running campaigns are not paused indefinitely."
+        )
+        return
+
     in_window = is_within_send_window(schedule)
     auto_paused = set(schedule.get("auto_paused_campaigns", []))
 

@@ -59,12 +59,16 @@ async def test_scan_skips_already_logged_emails(tmp_path, monkeypatch):
     monkeypatch.setattr(shared_log, "PROCESSED_FILE", tmp_path / "processed.json")
 
     client = make_client()
-    # Lists returns one list
-    client._request = AsyncMock(side_effect=[
-        {"data": {"results": [{"id": 1, "name": "Newsletter"}], "total": 1}},
-        # Subscribers for list 1: returns the already-logged email
-        {"data": {"results": [{"id": 99, "email": "already@example.com", "name": "Test", "lists": [{"id": 1}]}], "total": 1}},
-    ])
+
+    async def mock_request(method, path, **kwargs):
+        if method == "GET" and path == "/api/lists":
+            return {"data": {"results": [{"id": 1, "name": "Newsletter"}], "total": 1}}
+        if method == "GET" and "/api/subscribers" in path:
+            # Returns the already-logged email
+            return {"data": {"results": [{"id": 99, "email": "already@example.com", "name": "Test", "lists": [{"id": 1}]}], "total": 1}}
+        return {"data": {}}
+
+    client._request = mock_request
 
     result = await svc.scan_link_unsubscribes(client)
 
@@ -88,16 +92,21 @@ async def test_scan_processes_new_link_unsubscribe(tmp_path, monkeypatch):
     monkeypatch.setattr(shared_log, "PROCESSED_FILE", tmp_path / "processed.json")
 
     client = make_client()
-    client._request = AsyncMock(side_effect=[
-        # GET /api/lists
-        {"data": {"results": [{"id": 1, "name": "Newsletter"}], "total": 1}},
-        # GET /api/subscribers (list 1, page 1) — 1 result, less than per_page → done
-        {"data": {"results": [{"id": 55, "email": "new@example.com", "name": "New User", "lists": [{"id": 1}]}], "total": 1}},
-        # GET /api/campaigns (for campaign matching) — 1 campaign targeting list 1
-        {"data": {"results": [{"id": 10, "name": "April Newsletter", "created_at": "2026-04-14", "lists": [{"id": 1}]}], "total": 1}},
-        # PUT /api/subscribers/lists (unsubscribe from all)
-        {"data": {}},
-    ])
+
+    async def mock_request(method, path, **kwargs):
+        if method == "GET" and path == "/api/lists":
+            return {"data": {"results": [{"id": 1, "name": "Newsletter"}], "total": 1}}
+        if method == "GET" and "/api/subscribers" in path:
+            # 1 result, less than per_page → single page
+            return {"data": {"results": [{"id": 55, "email": "new@example.com", "name": "New User", "lists": [{"id": 1}]}], "total": 1}}
+        if method == "GET" and "/api/campaigns" in path:
+            # 1 campaign targeting list 1
+            return {"data": {"results": [{"id": 10, "name": "April Newsletter", "created_at": "2026-04-14", "lists": [{"id": 1}]}], "total": 1}}
+        if method == "PUT" and "/api/subscribers/lists" in path:
+            return {"data": {}}
+        return {"data": {}}
+
+    client._request = mock_request
 
     result = await svc.scan_link_unsubscribes(client)
 

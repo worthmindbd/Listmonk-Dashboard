@@ -14,6 +14,7 @@ threshold on hard bounces). This module never calls blocklist directly.
 import asyncio
 import email
 import email.policy
+import email.utils
 import imaplib
 import logging
 import re
