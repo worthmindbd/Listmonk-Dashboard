@@ -6,7 +6,7 @@
     --primary: #533afd;
     --primary-deep: #4434d4;
     --primary-press: #2e2b8c;
-    --primary-soft: #665efd;
+    --primary-soft: #8b85ff;
     --primary-glow: rgba(83, 58, 253, 0.28);
     --primary-subdued: rgba(83, 58, 253, 0.12);
     --primary-bg-subdued-hover: #b9b9f9;
@@ -69,7 +69,9 @@
 
     --text-primary: #f8fafc;
     --text-secondary: #94a3b8;
-    --text-muted: #64748b;
+    /* #64748b only reached 3.87:1 on the sidebar surface; this keeps muted text
+       above the 4.5:1 WCAG AA threshold without flattening the hierarchy. */
+    --text-muted: #7c8ba1;
 
     /* ── Dimensions & Radii (DESIGN.md) ────────────────────── */
     --sidebar-width: 260px;
@@ -460,8 +462,10 @@ td strong,
 
 /* ── Frosted Top Bar ───────────────────────────────────────── */
 .top-bar {
-    height: var(--topbar-height);
-    padding: 0 28px;
+    /* min-height, not height: the action buttons wrap onto extra rows on narrow
+       viewports, and a fixed height would let them overflow the bar. */
+    min-height: var(--topbar-height);
+    padding: 10px 28px;
     display: flex;
     align-items: center;
     gap: 16px;
@@ -1201,6 +1205,9 @@ code {
     height: 16px;
     color: var(--text-muted);
     pointer-events: none;
+    /* The input carries a backdrop-filter, so it composites its own stacking
+       layer and blurs everything painted behind it — including this icon. */
+    z-index: 1;
 }
 
 /* ── Pagination ────────────────────────────────────────────── */
@@ -1648,15 +1655,20 @@ td .action-btns {
 }
 
 /* ── Toast Notifications ───────────────────────────────────── */
+/* Offset below the top bar: at top:24px the toast covered the theme toggle
+   and made it unclickable. */
 .toast-container {
     position: fixed;
-    top: 24px;
+    top: calc(var(--topbar-height) + 16px);
     right: 24px;
     z-index: 1000;
     display: flex;
     flex-direction: column;
     gap: 10px;
     pointer-events: none;
+    /* Keep toasts inside the viewport on narrow screens; a fixed 24px inset
+       plus the toast min-width would otherwise push them off the left edge. */
+    max-width: calc(100vw - 48px);
 }
 
 .toast {
@@ -1665,8 +1677,8 @@ td .action-btns {
     font-size: 0.88rem;
     font-weight: 500;
     animation: toastSlide 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-    min-width: 280px;
-    max-width: 440px;
+    min-width: min(280px, 100%);
+    max-width: min(440px, 100%);
     box-shadow: var(--glass-shadow-lg);
     pointer-events: auto;
     backdrop-filter: blur(16px);
@@ -1808,8 +1820,21 @@ td .action-btns {
     }
 
     .top-bar {
-        padding: 0 16px;
+        padding: 10px 16px;
         gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    /* Buttons are the priority on mobile; the title wraps onto its own row
+       underneath instead of being crushed to zero width. */
+    .top-bar-title-wrap {
+        flex: 1 0 100%;
+        order: 2;
+    }
+
+    .top-bar-actions {
+        order: 1;
+        width: 100%;
     }
 
     .page-title {
@@ -1848,6 +1873,23 @@ td .action-btns {
 @media (max-width: 480px) {
     .content-area {
         padding: 10px;
+    }
+
+    /* Toasts sit in the top-right where the theme toggle lives, so on the
+       narrowest screens they drop below it and span the width instead. */
+    .toast-container {
+        top: auto;
+        bottom: 16px;
+        right: 12px;
+        left: 12px;
+        max-width: none;
+        align-items: stretch;
+    }
+
+    .toast {
+        min-width: 0;
+        max-width: none;
+        width: 100%;
     }
 
     .card {
