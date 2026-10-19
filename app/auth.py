@@ -90,10 +90,15 @@ def client_ip_from_request(request: Request) -> str:
 
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
-        # Left-most entry is the original client.
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return first
+        # With the usual reverse-proxy setup ($proxy_add_x_forwarded_for) our
+        # trusted proxy APPENDS the real client IP, so client-supplied entries
+        # come first. Taking the LEFT-most entry therefore let an attacker
+        # reset the rate-limit bucket with a fresh spoofed value per attempt.
+        # The LAST entry is the peer our proxy actually saw — the only value
+        # in the chain the client cannot forge.
+        last = forwarded.split(",")[-1].strip()
+        if last:
+            return last
     return peer
 
 

@@ -33,6 +33,11 @@ async def get_unsub_settings():
     return load_settings()
 
 
+# Whitelist of persisted settings keys — arbitrary keys otherwise accumulate
+# in unsubscribe_settings.json forever (and are silently merged on every read).
+_ALLOWED_SETTINGS_KEYS = {"blocklist_enabled"}
+
+
 @router.put("/settings")
 async def update_unsub_settings(request: Request):
     """Update unsubscribe scanner settings (e.g., blocklist toggle)."""
@@ -42,6 +47,12 @@ async def update_unsub_settings(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="Settings must be a JSON object")
+    unknown = set(data) - _ALLOWED_SETTINGS_KEYS
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown setting(s): {', '.join(sorted(unknown))}. Allowed: {', '.join(sorted(_ALLOWED_SETTINGS_KEYS))}",
+        )
     if "blocklist_enabled" in data and not isinstance(data["blocklist_enabled"], bool):
         raise HTTPException(status_code=400, detail="blocklist_enabled must be a boolean")
     save_settings(data)

@@ -95,9 +95,16 @@ def invalidate(campaign_id: int | None = None) -> None:
 
 
 def is_cached(campaign_id: int) -> bool:
-    if campaign_id not in _cache:
+    fetched_at = _fetched_at.get(campaign_id)
+    if fetched_at is None or campaign_id not in _cache:
         return False
-    return time.monotonic() - _fetched_at.get(campaign_id, 0) < TTL_SECONDS
+    if time.monotonic() - fetched_at >= TTL_SECONDS:
+        # Expire eagerly: without eviction a long-running process retained one
+        # full opener email set per campaign ever fetched, indefinitely.
+        _cache.pop(campaign_id, None)
+        _fetched_at.pop(campaign_id, None)
+        return False
+    return True
 
 
 def get_cached_opener_emails(campaign_id: int) -> set[str] | None:

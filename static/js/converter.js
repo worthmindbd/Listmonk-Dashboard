@@ -85,7 +85,7 @@ const Converter = {
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Map Columns</h3>
-                    <span style="color:var(--text-muted);font-size:0.85rem">${this.fileName} - ${this.columns.length} columns detected</span>
+                    <span style="color:var(--text-muted);font-size:0.85rem">${App.escapeHtml(this.fileName || '')} - ${this.columns.length} columns detected</span>
                 </div>
                 <div class="form-grid">
                     <div class="form-group">
@@ -342,6 +342,12 @@ const Converter = {
 
         const poll = async () => {
             try {
+                // The user may have navigated away; the dialog elements are gone.
+                const progressEl = document.getElementById('importProgress');
+                const statusEl = document.getElementById('importStatusText');
+                const logsEl = document.getElementById('importLogs');
+                if (!progressEl || !dialog.isConnected) return; // silently stop polling
+
                 const [statusRes, logsRes] = await Promise.allSettled([
                     API.get('/api/subscribers/import/status'),
                     API.get('/api/subscribers/import/logs'),
@@ -353,19 +359,30 @@ const Converter = {
                     const imported = status.imported || 0;
                     const pct = Math.round((imported / total) * 100);
 
-                    document.getElementById('importProgress').style.width = `${pct}%`;
-                    document.getElementById('importStatusText').textContent =
+                    progressEl.style.width = `${pct}%`;
+                    // ListMonk importer statuses: none | importing | stopping |
+                    // finished | failed — "failed" is TERMINAL, and "none" means
+                    // the importer is idle (import lost/restarted), so both must
+                    // end the poll instead of looping forever.
+                    if (statusEl) statusEl.textContent =
                         `${imported} / ${total} imported (${pct}%) - Status: ${status.status || 'unknown'}`;
 
                     if (status.status === 'finished' || status.status === 'stopped') {
                         App.toast(`Import complete! ${imported} subscribers imported.`, 'success');
                         return;
                     }
+                    if (status.status === 'failed' || status.status === 'none') {
+                        const logs = logsRes.status === 'fulfilled' ? (logsRes.value?.data || '') : '';
+                        App.showResult('Import Failed',
+                            `<p>The ListMonk import failed. Check the importer logs:</p>
+                             <pre style="max-height:200px;overflow:auto;font-size:0.8rem;color:#e74c3c">${App.escapeHtml(logs || status.status)}</pre>`);
+                        return;
+                    }
                 }
 
-                if (logsRes.status === 'fulfilled') {
+                if (logsRes.status === 'fulfilled' && logsEl) {
                     const logs = logsRes.value?.data || '';
-                    document.getElementById('importLogs').textContent = logs;
+                    logsEl.textContent = logs;
                 }
 
                 setTimeout(poll, 2000);

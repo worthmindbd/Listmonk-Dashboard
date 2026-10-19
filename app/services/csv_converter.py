@@ -12,7 +12,9 @@ import json
 from typing import Optional
 
 
-ENCODINGS = ["utf-8-sig", "utf-8", "latin-1", "cp1252"]
+# Order matters: latin-1 decodes ANY byte sequence, so it must come *last*
+# or cp1252 files (curly quotes, em-dashes) always mojibake as latin-1.
+ENCODINGS = ["utf-8-sig", "utf-8", "cp1252", "latin-1"]
 
 
 def _count_csv_rows(text: str, dialect) -> int:
@@ -40,6 +42,25 @@ def detect_encoding(file_bytes: bytes) -> str:
     return "latin-1"
 
 
+def _clean_fieldnames(fieldnames: list) -> list[str]:
+    """Normalize raw CSV header cells *without changing their count*.
+
+    ``csv.DictReader`` maps row values to fieldnames strictly by position, so
+    dropping empty header cells (the old behaviour) silently shifts every
+    later column: a ``",email,name"`` header made DictReader label the first
+    data column ``email``. Empty cells become ``unnamed:<index>`` keys and
+    duplicates get suffixed so one column can no longer shadow another in the
+    row dicts.
+    """
+    cleaned: list[str] = []
+    for i, name in enumerate(fieldnames):
+        label = (name or "").strip() or f"unnamed:{i}"
+        if label in cleaned:
+            label = f"{label} ({i})"
+        cleaned.append(label)
+    return cleaned
+
+
 def detect_columns(file_bytes: bytes) -> dict:
     """
     Detect columns in a CSV file.
@@ -61,7 +82,10 @@ def detect_columns(file_bytes: bytes) -> dict:
     if not reader.fieldnames:
         return {"columns": [], "sample_rows": [], "encoding": encoding}
 
-    columns = [f.strip() for f in reader.fieldnames if f]
+    # Positional-safe cleanup (keeps empty/duplicate cells distinguishable)
+    reader.fieldnames = _clean_fieldnames(reader.fieldnames)
+
+    columns = list(reader.fieldnames)
 
     # Read first 5 rows as sample
     sample_rows = []
@@ -113,10 +137,12 @@ def convert_csv(
     if not reader.fieldnames:
         return {"csv_content": "", "stats": {"error": "No columns found in CSV"}}
 
-    reader.fieldnames = [f.strip() for f in reader.fieldnames if f]
+    # Positional-safe cleanup (see _clean_fieldnames): never drop header cells,
+    # or every later column shifts positionally in DictReader's row dicts.
+    reader.fieldnames = _clean_fieldnames(reader.fieldnames)
 
     # Build case-insensitive column mapping
-    col_map = {f.strip().lower(): f for f in reader.fieldnames if f}
+    col_map = {name.lower(): name for name in reader.fieldnames}
 
     # Validate email column
     actual_email = col_map.get(email_column.strip().lower())

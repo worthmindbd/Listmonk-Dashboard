@@ -21,7 +21,7 @@ from app.services.auto_unblock import (
 )
 from app.services.campaign_scheduler import (
     load_schedule, save_schedule, is_within_send_window,
-    scheduler_loop, run_scheduler_tick,
+    scheduler_loop, run_scheduler_tick, _SCHEDULE_SAVE_LOCK,
 )
 from app.services.imap_unsubscribe import scan_and_unsubscribe
 from app.services.link_unsubscribe import scan_link_unsubscribes
@@ -195,7 +195,28 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 @app.exception_handler(httpx.HTTPStatusError)
 async def httpx_error_handler(request: Request, exc: httpx.HTTPStatusError):
-    return JSONResponse(status_code=exc.response.status_code, content={"detail": str(exc)})
+    # str(exc) embeds ListMonk's internal base URL and full query string
+    # (including user-typed search expressions), so forward only ListMonk's
+    # sanitised JSON error body when it is parseable.
+    detail = f"ListMonk API error ({exc.response.status_code})"
+    try:
+        body = exc.response.json()
+        if isinstance(body, dict) and body.get("message"):
+            detail = f"ListMonk API error: {body['message']}"
+    except Exception:
+        pass
+    return JSONResponse(status_code=exc.response.status_code, content={"detail": detail})
+
+
+@app.exception_handler(httpx.RequestError)
+async def httpx_request_error_handler(request: Request, exc: httpx.RequestError):
+    # Connection failures / timeouts / DNS errors otherwise fall through to a
+    # detail-less 500; report them as an upstream outage (502) instead.
+    logger.error(f"ListMonk unreachable ({request.url.path}): {exc}")
+    return JSONResponse(
+        status_code=502,
+        content={"detail": "ListMonk is unreachable. Check LISTMONK_URL and that the ListMonk instance is running."},
+    )
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 jinja_env = Environment(loader=FileSystemLoader(BASE_DIR / "templates"))
@@ -386,19 +407,23 @@ async def update_schedule(data: dict):
     if "enabled" in data and not isinstance(data["enabled"], bool):
         raise HTTPException(status_code=400, detail="enabled must be a boolean")
 
-    schedule = load_schedule()
-    for key in ["enabled", "timezone", "start_hour", "start_minute",
-                "end_hour", "end_minute", "days"]:
-        if key in data:
-            schedule[key] = data[key]
-    try:
-        save_schedule(schedule)
-    except OSError as e:
-        logger.error(f"Could not persist schedule: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Could not write schedule file (check data directory permissions).",
-        )
+    # Guard the read→mutate→save cycle with the same lock the scheduler tick
+    # holds for its entire run, so a tick that is mid-flight cannot save its
+    # stale snapshot over these new settings (and vice versa).
+    async with _SCHEDULE_SAVE_LOCK:
+        schedule = load_schedule()
+        for key in ["enabled", "timezone", "start_hour", "start_minute",
+                    "end_hour", "end_minute", "days"]:
+            if key in data:
+                schedule[key] = data[key]
+        try:
+            save_schedule(schedule)
+        except OSError as e:
+            logger.error(f"Could not persist schedule: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Could not write schedule file (check data directory permissions).",
+            )
     if schedule.get("enabled"):
         await run_scheduler_tick(listmonk)
     return {"status": "ok", "schedule": schedule}

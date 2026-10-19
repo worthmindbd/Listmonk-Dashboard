@@ -20,8 +20,7 @@ from app.config import settings
 from app.services.listmonk_client import ListMonkClient
 from app.services.unsubscribe_log import (
     load_log, save_log, append_log, load_settings, save_settings,
-    load_processed_emails, mark_processed,
-    _log_lock,
+    load_processed_emails, mark_processed, _log_lock, scanner_lock,
 )
 from app.services.imap_helpers import safe_email_for_query, imap_date, extract_email_body
 
@@ -273,10 +272,10 @@ def _oldest_pending_record_dt(records: list[dict]) -> Optional[datetime]:
     return oldest
 
 
-async def _fetch_campaign_history(client: ListMonkClient, cutoff: Optional[datetime]) -> tuple[list[dict], bool, bool]:
+async def _fetch_campaign_history(client: ListMonkClient, cutoff: Optional[datetime]) -> tuple[list[dict], bool, bool, bool]:
     """Fetch campaigns newest-first, walking back until ``cutoff`` is covered.
 
-    Returns ``(campaigns, complete_all, covers_cutoff)``:
+    Returns ``(campaigns, complete_all, covers_cutoff, fetch_ok)``:
 
     * ``complete_all`` — every campaign in ListMonk was fetched. Only then is
       it safe to prune records whose campaign no longer exists.
@@ -286,6 +285,11 @@ async def _fetch_campaign_history(client: ListMonkClient, cutoff: Optional[datet
       whichever recent campaign happens to share a list, so it must be False
       whenever we stopped early. When ``cutoff`` is None there is no pending
       re-attribution work, so a single page is both cheap and safe.
+    * ``fetch_ok`` — the ListMonk campaign query itself succeeded. Callers
+      MUST NOT process emails (or mark any message ``\\Seen``) while this is
+      False: an empty campaign list makes every reply unattributable, and
+      marking those messages seen would permanently discard genuine
+      unsubscribe requests.
     """
     if cutoff is None:
         # Steady state: nothing left to re-attribute, so one page is enough
@@ -298,11 +302,11 @@ async def _fetch_campaign_history(client: ListMonkClient, cutoff: Optional[datet
             )
         except Exception as e:
             logger.error(f"[IMAP] Failed to fetch campaigns: {e}")
-            return [], False, False
+            return [], False, False, False
         data = result.get("data", {})
         results = data.get("results", [])
         complete = results and data.get("total", 0) <= len(results)
-        return results, bool(complete), True
+        return results, bool(complete), True, True
 
     campaigns: list[dict] = []
     page = 1
@@ -314,12 +318,12 @@ async def _fetch_campaign_history(client: ListMonkClient, cutoff: Optional[datet
             )
         except Exception as e:
             logger.error(f"[IMAP] Failed to fetch campaigns: {e}")
-            return campaigns, False, False
+            return campaigns, False, False, False
 
         data = result.get("data", {})
         results = data.get("results", [])
         if not results:
-            return campaigns, True, True  # reached the end of history
+            return campaigns, True, True, True  # reached the end of history
         campaigns.extend(results)
 
         oldest_seen = None
@@ -336,7 +340,7 @@ async def _fetch_campaign_history(client: ListMonkClient, cutoff: Optional[datet
                     "without covering the oldest pending record; skipping "
                     "re-attribution to avoid mis-assigning it"
                 )
-            return campaigns, False, covers_cutoff
+            return campaigns, False, covers_cutoff, True
         page += 1
 
 
@@ -398,12 +402,15 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
     """
     Scan IMAP inbox for unsubscribe requests and process them.
     Returns summary of actions taken.
+
+    Runs under the shared ``scanner_lock`` (with the link scanner) so the same
+    subscriber cannot be processed by both unsubscribe sources concurrently.
     """
     if _scan_lock.locked():
         return {"scanned": 0, "matched": 0, "processed": 0, "errors": 0,
                 "message": "Scan already in progress"}
 
-    async with _scan_lock:
+    async with scanner_lock, _scan_lock:
         conn = await asyncio.to_thread(connect_imap)
         if not conn:
             return {"scanned": 0, "matched": 0, "processed": 0, "errors": 0,
@@ -422,7 +429,7 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
             # *new* replies; older pages are only needed to re-attribute
             # records written before list-aware matching existed.
             try:
-                campaigns_list, campaigns_complete, covers_cutoff = (
+                campaigns_list, campaigns_complete, covers_cutoff, campaigns_ok = (
                     await _fetch_campaign_history(
                         client, _oldest_pending_record_dt(load_log())
                     )
@@ -436,6 +443,24 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                 campaigns_list = []
                 campaigns_complete = False
                 covers_cutoff = False
+                campaigns_ok = False
+
+            if not campaigns_ok:
+                # Without the campaign list nothing can be attributed, and
+                # marking the messages \Seen would permanently discard them.
+                # Leave them UNSEEN and retry on the next scan instead.
+                logger.error(
+                    "[IMAP] Campaign list unavailable — aborting scan so "
+                    "unsubscribe replies are not consumed unprocessed"
+                )
+                return {
+                    "scanned": 0,
+                    "matched": 0,
+                    "processed": 0,
+                    "errors": 1,
+                    "message": "Campaign list unavailable; scan skipped (messages left unprocessed)",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
 
             # Backfill + prune must be atomic with respect to other writers
             # (link scanner, reset/delete endpoints) so no records are lost.

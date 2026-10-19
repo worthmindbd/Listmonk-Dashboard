@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from app.services.listmonk_client import ListMonkClient
 from app.services.unsubscribe_log import (
     append_log, load_settings, load_processed_emails, mark_processed,
+    scanner_lock,
 )
 
 logger = logging.getLogger("link_unsubscribe")
@@ -166,13 +167,15 @@ async def scan_link_unsubscribes(client: ListMonkClient) -> dict:
     first.
 
     Serialized with a module lock so a manual scan and the hourly background
-    scan cannot process (and log) the same subscribers twice.
+    scan cannot process (and log) the same subscribers twice. The shared
+    ``scanner_lock`` additionally serialises against the IMAP reply scanner,
+    which loads its own dedup set at scan start.
     """
     if _link_scan_lock.locked():
         return {"scanned_lists": 0, "new_found": 0, "processed": 0, "errors": 0,
                 "message": "Link scan already in progress"}
 
-    async with _link_scan_lock:
+    async with scanner_lock, _link_scan_lock:
         return await _scan_link_unsubscribes_impl(client)
 
 
@@ -260,9 +263,13 @@ async def _scan_link_unsubscribes_impl(client: ListMonkClient) -> dict:
             continue
 
         new_found += 1
-        sub_lists = [l["id"] for l in sub.get("lists", [])]
 
         try:
+            # `lists` can be absent, null, or contain malformed rows in API
+            # responses — one bad subscriber must not abort the whole scan
+            # batch (nothing would be persisted, so every scan would re-fail).
+            sub_lists = [l["id"] for l in (sub.get("lists") or [])]
+
             if sub_lists:
                 await client.modify_list_memberships({
                     "ids": [sid],

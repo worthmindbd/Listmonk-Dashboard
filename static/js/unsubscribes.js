@@ -48,6 +48,7 @@ const Unsubscribes = {
     },
 
     async render() {
+        const gen = App.beginRender();
         App.setContent('<div class="loading-spinner">Loading unsubscribes...</div>');
 
         try {
@@ -57,6 +58,7 @@ const Unsubscribes = {
                 API.get('/api/unsubscribes/campaigns'),
                 API.get('/api/unsubscribes/settings'),
             ]);
+            if (!App.isRenderCurrent(gen)) return; // navigated away mid-load
 
             this.stats = statsRes.status === 'fulfilled' ? statsRes.value : { total: 0, today: 0, this_week: 0 };
             this.imapStatus = statusRes.status === 'fulfilled' ? statusRes.value : { configured: false, connected: false };
@@ -66,11 +68,13 @@ const Unsubscribes = {
             // If we're in detail view, stay there
             if (this.activeCampaign) {
                 await this.loadCampaignRecords(this.activeCampaign.campaign_id);
+                if (!App.isRenderCurrent(gen)) return;
                 this.renderDetailView();
             } else {
                 this.renderListView();
             }
         } catch (err) {
+            if (!App.isRenderCurrent(gen)) return;
             App.setContent(`<div class="empty-state"><h3>Failed to load unsubscribes</h3><p>${App.escapeHtml(err.message || '')}</p></div>`);
         }
     },
@@ -208,6 +212,7 @@ const Unsubscribes = {
 
     /* ── Detail View — shows records for a single campaign ── */
     async openCampaign(campaignId) {
+        const gen = App.beginRender();
         this.activeCampaign = this.campaignGroups.find(g => g.campaign_id === campaignId) || { campaign_id: campaignId, campaign_key: 'unknown', campaign_name: 'No matching campaign', count: 0 };
         this.campaignPage = 1;
         this.selectedEmails.clear();
@@ -215,6 +220,7 @@ const Unsubscribes = {
         App.setContent('<div class="loading-spinner">Loading campaign records...</div>');
 
         await this.loadCampaignRecords(campaignId);
+        if (!App.isRenderCurrent(gen)) return; // navigated away mid-load
         this.renderDetailView();
     },
 
@@ -371,8 +377,10 @@ const Unsubscribes = {
 
     /* ── Pagination ───────────────────────────────────────── */
     async goToCampaignPage(p) {
+        const gen = App.beginRender();
         this.campaignPage = p;
         await this.loadCampaignRecords(this.activeCampaign.campaign_id);
+        if (!App.isRenderCurrent(gen)) return; // stale pagination (rapid page clicks)
         this.renderDetailView();
     },
 
@@ -472,17 +480,23 @@ const Unsubscribes = {
                 window.location.href = '/auth/login';
                 return;
             }
-            const result = await resp.json();
             if (!resp.ok) {
-                App.toast(result.detail || 'Scan failed', 'error');
-            } else {
-                const imapData = result.imap || result;  // supports both old and new format
-                const linkData = result.link || {};
-                const totalProcessed = (imapData.processed || 0) + (linkData.processed || 0);
-                const msg = `Scanned ${imapData.scanned || 0} emails + ${linkData.scanned_lists || 0} lists — ${totalProcessed} unsubscribed`;
-                App.toast(msg, totalProcessed > 0 ? 'success' : 'info');
-                await this.render();
+                // Parse defensively: a proxy 5xx may return an HTML error page.
+                let detail = `Scan failed (HTTP ${resp.status})`;
+                try {
+                    const errBody = await resp.json();
+                    if (errBody?.detail) detail = errBody.detail;
+                } catch { /* non-JSON body */ }
+                App.toast(detail, 'error');
+                return;
             }
+            const result = await resp.json();
+            const imapData = result.imap || result;  // supports both old and new format
+            const linkData = result.link || {};
+            const totalProcessed = (imapData.processed || 0) + (linkData.processed || 0);
+            const msg = `Scanned ${imapData.scanned || 0} emails + ${linkData.scanned_lists || 0} lists — ${totalProcessed} unsubscribed`;
+            App.toast(msg, totalProcessed > 0 ? 'success' : 'info');
+            await this.render();
         } catch (err) {
             if (err.name === 'AbortError') {
                 App.toast('Scan timed out — try again later', 'error');
@@ -510,8 +524,8 @@ const Unsubscribes = {
             // Re-render to update the label
             this.renderListView();
         } catch {
-            App.toast('Failed to update setting', 'error');
-            // Revert toggle
+            // API.request already surfaced the server message; just revert the
+            // toggle to match the still-active setting.
             this.settings.blocklist_enabled = !enabled;
             this.renderListView();
         }

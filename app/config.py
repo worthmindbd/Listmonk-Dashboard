@@ -1,12 +1,33 @@
+import logging
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger("config")
+
 # Repo root (app/config.py -> app/ -> repo root). Used as the default location
 # for mutable JSON state files when DATA_DIR is not set (e.g. local dev).
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _env_bool(name: str, default: str) -> bool:
+    """Parse a boolean env var, accepting the same truthy spellings as
+    TRUST_PROXY/COOKIE_SECURE in app/auth.py ("1"/"true"/"yes") so
+    IMAP_USE_SSL=1 is not silently treated as plaintext IMAP."""
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes")
+
+
+def _env_int(name: str, default: str) -> int:
+    """Parse an integer env var; a malformed value logs a clear warning and
+    falls back to the default instead of killing the app at import time."""
+    raw = os.getenv(name, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning(f"{name}={raw!r} is not a valid integer; using default {default}")
+        return int(default)
 
 
 class Settings:
@@ -21,17 +42,17 @@ class Settings:
 
     # IMAP settings for unsubscribe monitoring
     imap_host: str = os.getenv("IMAP_HOST", "")
-    imap_port: int = int(os.getenv("IMAP_PORT", "993"))
+    imap_port: int = _env_int("IMAP_PORT", "993")
     imap_user: str = os.getenv("IMAP_USER", "")
     imap_pass: str = os.getenv("IMAP_PASS", "")
-    imap_use_ssl: bool = os.getenv("IMAP_USE_SSL", "true").lower() == "true"
+    imap_use_ssl: bool = _env_bool("IMAP_USE_SSL", "true")
 
     # IMAP settings for bounce monitoring
     bounce_imap_host: str = os.getenv("BOUNCE_IMAP_HOST", "")
-    bounce_imap_port: int = int(os.getenv("BOUNCE_IMAP_PORT", "993"))
+    bounce_imap_port: int = _env_int("BOUNCE_IMAP_PORT", "993")
     bounce_imap_user: str = os.getenv("BOUNCE_IMAP_USER", "")
     bounce_imap_pass: str = os.getenv("BOUNCE_IMAP_PASS", "")
-    bounce_imap_use_ssl: bool = os.getenv("BOUNCE_IMAP_USE_SSL", "true").lower() == "true"
+    bounce_imap_use_ssl: bool = _env_bool("BOUNCE_IMAP_USE_SSL", "true")
 
     @property
     def imap_configured(self) -> bool:
@@ -61,7 +82,12 @@ class Settings:
                 try:
                     target.write_bytes(legacy.read_bytes())
                 except OSError:
-                    pass
+                    # A silent failure here would look like lost history
+                    # (unsubscribe log, schedules) after a volume switch.
+                    logger.exception(
+                        "Could not migrate legacy state file %s into %s",
+                        legacy, target,
+                    )
         return target
 
 

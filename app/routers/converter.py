@@ -10,6 +10,53 @@ router = APIRouter()
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
+# ListMonk's importer accepts exactly these modes; anything else either
+# produces a cryptic upstream 4xx or silently different behaviour.
+VALID_IMPORT_MODES = {"subscribe", "subscribe-existing", "unsubscribed"}
+
+
+def _parse_attribute_columns(attribute_columns: Optional[str]) -> list[str]:
+    """Parse and validate the attribute_columns form field."""
+    if not attribute_columns:
+        return []
+    try:
+        attrs = json.loads(attribute_columns)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON in attribute_columns")
+    if not isinstance(attrs, list) or not all(isinstance(a, str) for a in attrs):
+        raise HTTPException(
+            status_code=400,
+            detail="attribute_columns must be a JSON array of column-name strings",
+        )
+    return attrs
+
+
+def _parse_list_ids(list_ids: str) -> list[int]:
+    """Parse and validate the list_ids form field."""
+    try:
+        parsed = json.loads(list_ids)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON in list_ids")
+    if (
+        not isinstance(parsed, list)
+        or not parsed
+        or not all(isinstance(i, int) and not isinstance(i, bool) for i in parsed)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="list_ids must be a JSON array of integer list IDs (e.g. [1,2])",
+        )
+    return parsed
+
+
+def _parse_mode(mode: str) -> str:
+    if mode not in VALID_IMPORT_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"mode must be one of: {', '.join(sorted(VALID_IMPORT_MODES))}",
+        )
+    return mode
+
 
 async def _read_upload(file: UploadFile) -> bytes:
     """Read an uploaded file, rejecting oversized payloads before buffering."""
@@ -46,13 +93,7 @@ async def convert_csv_file(
 ):
     """Convert a CSV to ListMonk format and return as download."""
     content = await _read_upload(file)
-
-    attrs = []
-    if attribute_columns:
-        try:
-            attrs = json.loads(attribute_columns)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON in attribute_columns")
+    attrs = _parse_attribute_columns(attribute_columns)
 
     result = convert_csv(content, email_column, name_column, attrs)
 
@@ -80,26 +121,17 @@ async def convert_and_import(
 ):
     """Convert CSV to ListMonk format and immediately import to ListMonk."""
     content = await _read_upload(file)
-
-    attrs = []
-    if attribute_columns:
-        try:
-            attrs = json.loads(attribute_columns)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON in attribute_columns")
+    attrs = _parse_attribute_columns(attribute_columns)
+    parsed_list_ids = _parse_list_ids(list_ids)
+    import_mode = _parse_mode(mode)
 
     result = convert_csv(content, email_column, name_column, attrs)
 
     if "error" in result.get("stats", {}):
         raise HTTPException(status_code=400, detail=result["stats"]["error"])
 
-    # Import to ListMonk
-    try:
-        parsed_list_ids = json.loads(list_ids)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON in list_ids")
     import_params = {
-        "mode": mode,
+        "mode": import_mode,
         "delim": ",",
         "lists": parsed_list_ids,
         "overwrite": True,

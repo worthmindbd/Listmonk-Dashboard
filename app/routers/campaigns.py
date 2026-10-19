@@ -29,6 +29,18 @@ _summary_cache: dict = {}
 _summary_cached_at = 0.0
 
 
+def invalidate_summary_cache() -> None:
+    """Clear the 60s campaigns summary cache.
+
+    Invalidation hook per the module-cache convention (AGENTS.md rule 11):
+    tests reset this via tests/conftest.py so a cached summary from one test
+    cannot satisfy another test's mocked ListMonk responses.
+    """
+    global _summary_cache, _summary_cached_at
+    _summary_cache = {}
+    _summary_cached_at = 0.0
+
+
 def _hard_counts_ready() -> bool:
     """True once the hard-bounce cache has completed at least one refresh."""
     return bool(get_last_updated())

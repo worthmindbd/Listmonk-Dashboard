@@ -4,6 +4,20 @@
 const App = {
     currentPage: null,
 
+    // Stale-async-render protection: every page render captures a generation
+    // token (App.beginRender) and must verify (App.isRenderCurrent) before it
+    // touches the DOM. Without this, a slow /api/bounces response that lands
+    // after the user navigated away would overwrite the new page's content.
+    _renderGen: 0,
+
+    beginRender() {
+        return ++this._renderGen;
+    },
+
+    isRenderCurrent(gen) {
+        return gen === this._renderGen;
+    },
+
     pages: {
         'dashboard': { title: 'Dashboard', render: () => Dashboard.render() },
         'subscribers': { title: 'Subscribers', render: () => Subscribers.render() },
@@ -68,6 +82,11 @@ const App = {
         // Update title
         document.getElementById('pageTitle').textContent = page.title;
         document.getElementById('topBarActions').innerHTML = '';
+
+        // Tear down live Chart.js instances from charts/analytics so detached
+        // canvases (and their ResizeObservers) are not kept alive across pages.
+        if (typeof Dashboard !== 'undefined' && Dashboard.destroyCharts) Dashboard.destroyCharts();
+        if (typeof Analytics !== 'undefined' && Analytics.destroyCharts) Analytics.destroyCharts();
 
         // Render page
         const content = document.getElementById('contentArea');
@@ -140,6 +159,13 @@ const App = {
 
     confirm(title, message) {
         return new Promise((resolve) => {
+            // A second overlapping confirm() must not orphan the first one:
+            // resolve the pending promise with false before replacing it.
+            if (this._modalResolve) {
+                const pending = this._modalResolve;
+                this._modalResolve = null;
+                pending(false);
+            }
             this._modalResolve = resolve;
             document.getElementById('modalTitle').textContent = title;
             document.getElementById('modalBody').innerHTML = `<p>${this.escapeHtml(message)}</p>`;
@@ -301,8 +327,10 @@ const Templates = {
     _data: [],
 
     async render() {
+        const gen = App.beginRender();
         try {
             const result = await API.get('/api/templates');
+            if (!App.isRenderCurrent(gen)) return;
             this._data = result?.data || [];
             const templates = this._data;
 
@@ -343,6 +371,7 @@ const Templates = {
             html += '</tbody></table></div>';
             App.setContent(html);
         } catch (err) {
+            if (!App.isRenderCurrent(gen)) return;
             console.error('Templates load error:', err);
             App.setContent(`<div class="empty-state"><h3>Failed to load templates</h3><p>${App.escapeHtml(err.message || '')}</p></div>`);
         }
@@ -461,6 +490,7 @@ const Bounces = {
     },
 
     async render() {
+        const gen = App.beginRender();
         try {
             const fetchCampaigns = !this.campaigns.length
                 ? API.get('/api/campaigns?per_page=500&order_by=created_at&order=DESC')
@@ -470,6 +500,7 @@ const Bounces = {
                 fetchCampaigns,
                 API.get(`/api/bounces?${this._queryParams()}`),
             ]);
+            if (!App.isRenderCurrent(gen)) return; // user navigated / re-filtered mid-load
             if (campRes) this.campaigns = campRes?.data?.results || [];
 
             const data = bounceRes?.data || {};
@@ -483,7 +514,7 @@ const Bounces = {
             ).join('');
 
             const filterLabel = this.campaignFilter
-                ? this.campaigns.find(c => c.id === this.campaignFilter)?.name || `#${this.campaignFilter}`
+                ? App.escapeHtml(this.campaigns.find(c => c.id === this.campaignFilter)?.name || `#${this.campaignFilter}`)
                 : 'All campaigns';
 
             const deleteActionLabel = this.campaignFilter
@@ -527,7 +558,7 @@ const Bounces = {
                     <td>${b.id}</td>
                     <td><strong>${App.escapeHtml(b.email || '-')}</strong></td>
                     <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis">${campName}</td>
-                    <td>${b.source || '-'}</td>
+                    <td>${App.escapeHtml(b.source || '-')}</td>
                     <td><span class="badge badge-${b.type === 'hard' ? 'danger' : 'warning'}">${b.type || 'unknown'}</span></td>
                     <td>${App.formatDate(b.created_at)}</td>
                     <td class="cell-actions"><button class="btn btn-sm btn-danger" onclick="Bounces.remove(${b.id})">Delete</button></td>
@@ -538,6 +569,7 @@ const Bounces = {
             html += App.renderPagination(this.page, total, this.perPage, 'Bounces.goToPage');
             App.setContent(html);
         } catch (err) {
+            if (!App.isRenderCurrent(gen)) return;
             App.setContent(`<div class="empty-state"><h3>Failed to load bounces</h3><p>${App.escapeHtml(err.message || '')}</p></div>`);
         }
     },

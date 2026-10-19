@@ -224,7 +224,10 @@ async def test_imap_scan_marks_messages_seen_and_undo_sticks(tmp_path, monkeypat
     assert first["processed"] == 1
     assert fake_conn.flags.get(b"1") == "\\Seen"
     assert len(json.loads((tmp_path / "log.json").read_text())) == 1
-    assert "user@example.com" in json.loads((tmp_path / "processed.json").read_text())
+    # Processed store persists per-email timestamps (TTL) under "processed".
+    raw = json.loads((tmp_path / "processed.json").read_text())
+    stored = raw["processed"] if isinstance(raw, dict) else raw
+    assert "user@example.com" in stored
 
     # Simulate "Undo All": records + processed emails removed (as reset does).
     shared_log.save_log([])

@@ -8,6 +8,7 @@ const Settings = {
     _refreshInterval: null,
 
     async render() {
+        const gen = App.beginRender();
         App.setContent('<div class="loading-spinner">Loading settings...</div>');
 
         try {
@@ -15,9 +16,11 @@ const Settings = {
                 API.get('/api/scheduler'),
                 API.get('/api/auto-unblock/status'),
             ]);
+            if (!App.isRenderCurrent(gen)) return; // navigated away mid-load
             this.schedule = sched;
             this.unblockStatus = unblock;
         } catch {
+            if (!App.isRenderCurrent(gen)) return;
             App.setContent('<div class="empty-state"><h3>Failed to load settings</h3></div>');
             return;
         }

@@ -8,12 +8,14 @@ const Campaigns = {
     analyticsChart: null,
 
     async render() {
+        const gen = App.beginRender();
         try {
             let params = `page=${this.page}&per_page=50`;
             if (this.query) params += `&query=${encodeURIComponent(this.query)}`;
             if (this.statusFilter) params += `&status=${this.statusFilter}`;
 
             const result = await API.get(`/api/campaigns?${params}`);
+            if (!App.isRenderCurrent(gen)) return; // stale render (navigated away / re-filtered)
             const data = result?.data || {};
             const campaigns = data.results || [];
             const total = data.total || 0;
@@ -79,6 +81,7 @@ const Campaigns = {
             html += App.renderPagination(this.page, total, 50, 'Campaigns.goToPage');
             App.setContent(html);
         } catch {
+            if (!App.isRenderCurrent(gen)) return;
             App.setContent('<div class="empty-state"><h3>Failed to load campaigns</h3></div>');
         }
     },

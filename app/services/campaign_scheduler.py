@@ -51,6 +51,15 @@ def load_schedule() -> dict:
 
 import os
 import tempfile
+import asyncio
+
+# Serialises every load→mutate→save cycle on schedule.json (the 60s tick, a
+# manually triggered tick, and the PUT /api/scheduler endpoint). Without it a
+# tick that spends minutes paginating campaigns can save its stale snapshot
+# over the user's settings, and overlapping ticks can drop each other's
+# auto_paused_campaigns entries — stranding campaigns in "paused" forever.
+_SCHEDULE_SAVE_LOCK = asyncio.Lock()
+
 
 def save_schedule(schedule: dict):
     """Save schedule to JSON file atomically."""
@@ -101,85 +110,92 @@ def is_within_send_window(schedule: dict) -> bool:
 
 
 async def run_scheduler_tick(client: ListMonkClient):
-    """Single tick of the scheduler. Called every 60 seconds."""
-    schedule = load_schedule()
+    """Single tick of the scheduler. Called every 60 seconds.
 
-    if not schedule.get("enabled"):
-        return
+    The whole tick runs under ``_SCHEDULE_SAVE_LOCK`` so a manual run and the
+    background loop cannot interleave their campaign status changes and saves,
+    and so a PUT /api/scheduler cannot be clobbered mid-tick (it waits for the
+    lock, then reads the fresh state).
+    """
+    async with _SCHEDULE_SAVE_LOCK:
+        schedule = load_schedule()
 
-    # A schedule with no usable days is never "in window", which would make
-    # this tick pause every running campaign and never resume any of them.
-    # The API rejects an empty day list, so this only guards a hand-edited or
-    # corrupted schedule file — skip the tick rather than stall all sending.
-    day_map = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
-    if not day_map.intersection(schedule.get("days", [])):
-        logger.error(
-            "Schedule has no valid days configured; skipping this tick so "
-            "running campaigns are not paused indefinitely."
-        )
-        return
+        if not schedule.get("enabled"):
+            return
 
-    in_window = is_within_send_window(schedule)
-    auto_paused = set(schedule.get("auto_paused_campaigns", []))
-
-    tz = ZoneInfo(schedule["timezone"])
-    now = datetime.now(tz)
-    logger.debug(f"Scheduler tick: {now.strftime('%A %H:%M %Z')} | in_window={in_window} | auto_paused={auto_paused}")
-
-    try:
-        # Only running/paused campaigns are relevant: running ones may need
-        # pausing, and paused ones may need resuming. This avoids paginating
-        # the entire campaign history every 60 seconds.
-        campaigns = []
-        for status in ("running", "paused"):
-            campaigns.extend(
-                await client.paginate_all(
-                    client.get_campaigns, per_page=100, status=status,
-                )
+        # A schedule with no usable days is never "in window", which would make
+        # this tick pause every running campaign and never resume any of them.
+        # The API rejects an empty day list, so this only guards a hand-edited or
+        # corrupted schedule file — skip the tick rather than stall all sending.
+        day_map = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+        if not day_map.intersection(schedule.get("days", [])):
+            logger.error(
+                "Schedule has no valid days configured; skipping this tick so "
+                "running campaigns are not paused indefinitely."
             )
+            return
 
-        changed = False
+        in_window = is_within_send_window(schedule)
+        auto_paused = set(schedule.get("auto_paused_campaigns", []))
 
-        for camp in campaigns:
-            cid = camp["id"]
-            status = camp["status"]
+        tz = ZoneInfo(schedule["timezone"])
+        now = datetime.now(tz)
+        logger.debug(f"Scheduler tick: {now.strftime('%A %H:%M %Z')} | in_window={in_window} | auto_paused={auto_paused}")
 
-            if not in_window and status == "running":
-                # Outside send window -> pause it
-                try:
-                    await client.change_campaign_status(cid, "paused")
-                    auto_paused.add(cid)
-                    camp["status"] = "paused"
-                    changed = True
-                    logger.info(f"Auto-PAUSED campaign #{cid} '{camp['name']}' (outside {schedule['start_hour']:02d}:{schedule['start_minute']:02d}-{schedule['end_hour']:02d}:{schedule['end_minute']:02d} {schedule['timezone']})")
-                except Exception as e:
-                    logger.error(f"Failed to pause campaign #{cid}: {e}")
+        try:
+            # Only running/paused campaigns are relevant: running ones may need
+            # pausing, and paused ones may need resuming. This avoids paginating
+            # the entire campaign history every 60 seconds.
+            campaigns = []
+            for status in ("running", "paused"):
+                campaigns.extend(
+                    await client.paginate_all(
+                        client.get_campaigns, per_page=100, status=status,
+                    )
+                )
 
-            elif in_window and status == "paused" and cid in auto_paused:
-                # Inside send window + was auto-paused -> resume it
-                try:
-                    await client.change_campaign_status(cid, "running")
+            changed = False
+
+            for camp in campaigns:
+                cid = camp["id"]
+                status = camp["status"]
+
+                if not in_window and status == "running":
+                    # Outside send window -> pause it
+                    try:
+                        await client.change_campaign_status(cid, "paused")
+                        auto_paused.add(cid)
+                        camp["status"] = "paused"
+                        changed = True
+                        logger.info(f"Auto-PAUSED campaign #{cid} '{camp['name']}' (outside {schedule['start_hour']:02d}:{schedule['start_minute']:02d}-{schedule['end_hour']:02d}:{schedule['end_minute']:02d} {schedule['timezone']})")
+                    except Exception as e:
+                        logger.error(f"Failed to pause campaign #{cid}: {e}")
+
+                elif in_window and status == "paused" and cid in auto_paused:
+                    # Inside send window + was auto-paused -> resume it
+                    try:
+                        await client.change_campaign_status(cid, "running")
+                        auto_paused.discard(cid)
+                        camp["status"] = "running"
+                        changed = True
+                        logger.info(f"Auto-RESUMED campaign #{cid} '{camp['name']}' (inside send window)")
+                    except Exception as e:
+                        logger.error(f"Failed to resume campaign #{cid}: {e}")
+
+            # Clean up auto_paused list: remove any that are no longer paused or no longer exist
+            camp_map = {c["id"]: c for c in campaigns}
+            for cid in list(auto_paused):
+                camp = camp_map.get(cid)
+                if not camp or camp["status"] != "paused":
                     auto_paused.discard(cid)
-                    camp["status"] = "running"
                     changed = True
-                    logger.info(f"Auto-RESUMED campaign #{cid} '{camp['name']}' (inside send window)")
-                except Exception as e:
-                    logger.error(f"Failed to resume campaign #{cid}: {e}")
 
-        # Clean up auto_paused list: remove any that are no longer paused or no longer exist
-        camp_map = {c["id"]: c for c in campaigns}
-        for cid in list(auto_paused):
-            camp = camp_map.get(cid)
-            if not camp or camp["status"] != "paused":
-                auto_paused.discard(cid)
-                changed = True
+            if changed:
+                schedule["auto_paused_campaigns"] = list(auto_paused)
+                save_schedule(schedule)
 
-        if changed:
-            schedule["auto_paused_campaigns"] = list(auto_paused)
-            save_schedule(schedule)
-
-    except Exception as e:
-        logger.error(f"Scheduler tick error: {e}")
+        except Exception as e:
+            logger.error(f"Scheduler tick error: {e}")
 
 
 async def scheduler_loop(client: ListMonkClient):

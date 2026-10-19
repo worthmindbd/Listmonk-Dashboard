@@ -136,8 +136,16 @@ async def fetch_filtered_bounces_page(
     # for hard bounces (already excludes openers); otherwise use cached total or
     # ListMonk's total (or actual collected count if we finished all pages).
     reached_end = (lm_page * LM_FETCH_SIZE >= lm_total) or (len(collected) < needed and not raw_results)
+    typed_filter = bool(bounce_type) and (bounce_type or "").lower() != "all"
     if reached_end:
         total = len(collected)
+    elif typed_filter:
+        # Stock ListMonk's /api/bounces has no bounce_type parameter, so the
+        # raw lm_total is UNFILTERED — advertising it mid-walk promises pages
+        # of results that can never exist (phantom empty pages). Walked-so-far
+        # counts are the only honest bound; +1 keeps the next-page affordance
+        # while unscanned ListMonk records remain.
+        total = max(len(collected), needed + 1)
     else:
         total = max(lm_total, len(collected))
 

@@ -19,6 +19,7 @@ const Dashboard = {
     },
 
     async render() {
+        const gen = App.beginRender();
         App.setContent('<div class="loading-spinner">Loading dashboard...</div>');
 
         try {
@@ -29,6 +30,7 @@ const Dashboard = {
                 API.get('/api/subscribers?per_page=1'),
                 API.get('/api/campaigns/summary'),
             ]);
+            if (!App.isRenderCurrent(gen)) return;
 
             this.summary = summaryRes.status === 'fulfilled' ? (summaryRes.value || null) : null;
             const totalLists = listsRes.status === 'fulfilled' ? (listsRes.value?.data?.total || 0) : 0;
@@ -118,8 +120,20 @@ const Dashboard = {
             this.renderStatusChart(campaigns);
 
         } catch (err) {
+            if (!App.isRenderCurrent(gen)) return;
             App.setContent(`<div class="empty-state"><h3>Failed to load dashboard</h3><p>${App.escapeHtml(err.message)}</p></div>`);
         }
+    },
+
+    destroyCharts() {
+        // Router hook: destroy chart instances when navigating away so the
+        // detached canvases and their ResizeObservers are not kept alive.
+        Object.keys(this.charts || {}).forEach(key => {
+            if (this.charts[key]) {
+                this.charts[key].destroy();
+                delete this.charts[key];
+            }
+        });
     },
 
     renderCampaignChart(campaigns) {

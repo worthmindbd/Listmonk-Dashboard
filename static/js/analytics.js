@@ -11,6 +11,7 @@ const Analytics = {
     campaignUnsubCount: 0,
 
     async render() {
+        const gen = App.beginRender();
         // Set default date range: last 30 days
         const now = new Date();
         const thirtyDaysAgo = new Date(now);
@@ -27,6 +28,7 @@ const Analytics = {
                 API.get('/api/unsubscribes/stats'),
                 API.get('/api/campaigns/summary'),
             ]);
+            if (!App.isRenderCurrent(gen)) return; // navigated away mid-load
             this.campaigns = campRes.status === 'fulfilled' ? (campRes.value?.data?.results || []) : [];
             this.unsubStats = unsubRes.status === 'fulfilled' ? unsubRes.value : { total: 0 };
             this.summary = summaryRes.status === 'fulfilled' ? (summaryRes.value || null) : null;
@@ -38,13 +40,26 @@ const Analytics = {
 
             // Fetch per-campaign unsubscribe count
             await this.loadCampaignUnsubCount();
+            if (!App.isRenderCurrent(gen)) return;
             this.renderPage();
         } catch (err) {
             console.error('Analytics load error:', err);
+            if (!App.isRenderCurrent(gen)) return;
             this.campaigns = [];
             this.unsubStats = { total: 0 };
             App.setContent(`<div class="empty-state"><h3>Failed to load analytics</h3><p>${App.escapeHtml(err?.message || '')}</p></div>`);
         }
+    },
+
+    destroyCharts() {
+        // Router hook: destroy chart instances when navigating away so the
+        // detached canvases and their ResizeObservers are not kept alive.
+        Object.keys(this.charts || {}).forEach(key => {
+            if (this.charts[key]) {
+                this.charts[key].destroy();
+                delete this.charts[key];
+            }
+        });
     },
 
     getThemeColors() {

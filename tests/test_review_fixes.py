@@ -206,7 +206,7 @@ async def test_history_reaching_the_end_reports_complete():
 
     now = datetime.now(timezone.utc)
     client = _HistoryClient(150)
-    camps, complete_all, covers = await _fetch_campaign_history(client, now)
+    camps, complete_all, covers, fetch_ok = await _fetch_campaign_history(client, now)
     assert complete_all is True
     assert covers is True
     assert len(camps) == 150
@@ -221,7 +221,7 @@ async def test_history_page_cap_stops_the_walk():
 
     now = datetime.now(timezone.utc)
     client = _HistoryClient(5000)
-    _, complete_all, covers = await _fetch_campaign_history(client, now)
+    _, complete_all, covers, fetch_ok = await _fetch_campaign_history(client, now)
     assert complete_all is False, "must not claim completeness after a capped walk"
     assert len(client.camps) == 5000  # sanity: fixture really is that big
     assert covers is True, "page 1 of 5000 easily covers 'now'"
@@ -236,7 +236,7 @@ async def test_history_unreachable_cutoff_blocks_reattribution():
 
     now = datetime.now(timezone.utc)
     client = _HistoryClient(5000)
-    _, complete_all, covers = await _fetch_campaign_history(
+    _, complete_all, covers, fetch_ok = await _fetch_campaign_history(
         client, now - timedelta(days=50_000)
     )
     assert complete_all is False
@@ -248,7 +248,7 @@ async def test_history_steady_state_is_single_page_and_cheap():
     from app.services.imap_unsubscribe import _fetch_campaign_history
 
     client = _HistoryClient(150)
-    camps, complete_all, covers = await _fetch_campaign_history(client, None)
+    camps, complete_all, covers, fetch_ok = await _fetch_campaign_history(client, None)
     assert len(camps) == 100, "no pending records must not walk the whole history"
     assert covers is True
     assert complete_all is False
@@ -334,11 +334,24 @@ def test_forwarded_for_ignored_from_untrusted_public_peer(monkeypatch):
 
 
 def test_forwarded_for_honoured_from_loopback_proxy(monkeypatch):
+    """The LAST XFF entry is the peer our trusted proxy appended."""
     from app.auth import client_ip_from_request
 
     monkeypatch.delenv("TRUST_PROXY", raising=False)
     got = client_ip_from_request(_request_with("127.0.0.1", "203.0.113.9, 10.0.0.5"))
-    assert got == "203.0.113.9", "left-most XFF entry is the original client"
+    assert got == "10.0.0.5", "last XFF entry is the client the trusted proxy saw"
+
+
+def test_forwarded_for_leftmost_spoof_cannot_reset_bucket(monkeypatch):
+    """A client-supplied XFF chain (spoofed-first) must not become the bucket:
+    nginx appends the real client, so the attacker-controlled leftmost value
+    can never be the one we rate-limit on."""
+    from app.auth import client_ip_from_request
+
+    monkeypatch.delenv("TRUST_PROXY", raising=False)
+    # Attacker sends "1.2.3.4" (spoofed); our proxy appends the real "8.8.8.8".
+    got = client_ip_from_request(_request_with("10.0.0.5", "1.2.3.4, 8.8.8.8"))
+    assert got == "8.8.8.8", "spoofed leftmost XFF entry must be ignored"
 
 
 def test_trust_proxy_opt_in(monkeypatch):

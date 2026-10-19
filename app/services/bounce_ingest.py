@@ -214,6 +214,43 @@ def connect_bounce_imap_rw() -> Optional[imaplib.IMAP4_SSL]:
 
 _INGEST_LOCK = asyncio.Lock()
 
+# Attribution needs to see older campaigns too: a delayed DSN can arrive long
+# after newer campaigns were sent, and a hint that only matches the 50 newest
+# campaigns would fall through to the (wrong) heuristic attribution.
+CAMPAIGN_HISTORY_PAGES = 20  # Safety cap: 2000 campaigns
+CAMPAIGN_HISTORY_PAGE_SIZE = 100
+
+# Non-transient per-message failures (malformed MIME, unparseable DSN) stay
+# UNSEEN so a transient API hiccup can retry them — but after this many failed
+# passes they are marked \Seen anyway, or one poison message would be
+# re-fetched and re-failed on every hourly scan forever.
+POISON_MESSAGE_MAX_ATTEMPTS = 3
+_message_failures: dict[bytes, int] = {}
+
+
+async def _fetch_recent_campaigns(client: ListMonkClient) -> tuple[list[dict], bool]:
+    """Fetch recent campaigns newest-first for attribution hints.
+
+    Returns ``(campaigns, ok)`` — ``ok`` is False when the API call failed, so
+    callers can avoid destructive per-message decisions (skip+mark-seen) on
+    information they never had.
+    """
+    campaigns: list[dict] = []
+    for page in range(1, CAMPAIGN_HISTORY_PAGES + 1):
+        try:
+            res = await client.get_campaigns(
+                page=page, per_page=CAMPAIGN_HISTORY_PAGE_SIZE,
+                order_by="created_at", order="DESC",
+            )
+        except Exception as e:
+            logger.warning(f"Could not fetch campaigns (page {page}): {e}")
+            return campaigns, False
+        results = res.get("data", {}).get("results", [])
+        if not results:
+            break
+        campaigns.extend(results)
+    return campaigns, True
+
 
 async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
     """
@@ -245,15 +282,9 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
         errors = 0
         skipped_reasons: dict = {}
 
-        # Cache recent campaigns once for the fallback attribution.
-        try:
-            camp_res = await client.get_campaigns(
-                page=1, per_page=50, order_by="created_at", order="DESC",
-            )
-            recent_campaigns = camp_res.get("data", {}).get("results", [])
-        except Exception as e:
-            logger.warning(f"Could not fetch recent campaigns: {e}")
-            recent_campaigns = []
+        # Fetch the campaign history once for hint matching + fallback
+        # attribution (bounded walk, see _fetch_recent_campaigns).
+        recent_campaigns, campaigns_ok = await _fetch_recent_campaigns(client)
 
         try:
             await asyncio.to_thread(conn.select, "INBOX", readonly=False)
@@ -336,7 +367,16 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                     if not campaign:
                         skipped += 1
                         skipped_reasons["no_campaign"] = skipped_reasons.get("no_campaign", 0) + 1
-                        await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
+                        if campaigns_ok:
+                            # Genuinely unattributable (no headers, no list/date
+                            # match) — safe to consume.
+                            await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
+                        else:
+                            # The campaign list was unavailable, so "no match"
+                            # means "unknown", not "unattributable". Leave the
+                            # message UNSEEN so the next scan retries with the
+                            # full list instead of silently dropping bounces.
+                            errors += 1
                         continue
 
                     if await subscriber_opened_campaign(
@@ -383,6 +423,21 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                 except Exception as e:
                     logger.error(f"error processing message {msg_id}: {e}")
                     errors += 1
+                    # A permanently malformed message can never parse: after
+                    # POISON_MESSAGE_MAX_ATTEMPTS failed scans, consume it so
+                    # it is not re-fetched (and re-failed) on every hourly run.
+                    attempts = _message_failures.get(msg_id, 0) + 1
+                    _message_failures[msg_id] = attempts
+                    if attempts >= POISON_MESSAGE_MAX_ATTEMPTS:
+                        logger.warning(
+                            f"message {msg_id} failed {attempts} times; marking "
+                            "\\Seen to stop re-fetching this poison message"
+                        )
+                        try:
+                            await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
+                        except Exception:
+                            pass
+                        _message_failures.pop(msg_id, None)
 
         finally:
             try:
