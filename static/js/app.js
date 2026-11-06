@@ -42,6 +42,17 @@ const App = {
             document.getElementById('sidebar').classList.remove('open');
         });
 
+        // Clicking the active unsubscribes link resets to the campaign list view
+        document.querySelectorAll('.nav-link').forEach(link => {
+            link.addEventListener('click', () => {
+                if (link.dataset.page === 'unsubscribes' && App.currentPage === 'unsubscribes') {
+                    if (typeof Unsubscribes !== 'undefined' && Unsubscribes.activeCampaign) {
+                        Unsubscribes.backToList();
+                    }
+                }
+            });
+        });
+
         // Modal handlers
         document.getElementById('modalClose').addEventListener('click', () => this.closeModal());
         document.getElementById('modalCancel').addEventListener('click', () => this.closeModal());
@@ -72,6 +83,14 @@ const App = {
             Bounces.campaigns = [];
             Bounces.campaignFilter = 0;
             Bounces.page = 1;
+        }
+        if (hash !== 'unsubscribes' && typeof Unsubscribes !== 'undefined') {
+            Unsubscribes.activeCampaign = null;
+            Unsubscribes.selectedEmails.clear();
+            Unsubscribes.campaignPage = 1;
+            Unsubscribes.campaignSearchQuery = '';
+            Unsubscribes.campaignSourceFilter = '';
+            Unsubscribes.campaignFilterQuery = '';
         }
 
         // Update nav
@@ -294,12 +313,14 @@ const App = {
     formatDate(dateStr) {
         if (!dateStr) return '-';
         const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return '-';
         return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
     },
 
     formatDateTime(dateStr) {
         if (!dateStr) return '-';
         const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return '-';
         return d.toLocaleString('en-US', {
             year: 'numeric', month: 'short', day: 'numeric',
             hour: '2-digit', minute: '2-digit'

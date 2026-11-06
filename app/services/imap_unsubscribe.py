@@ -870,24 +870,29 @@ def get_stats() -> dict:
     total = len(records)
 
     now = datetime.now(timezone.utc)
-    today_str = now.date().isoformat()
+    today_date = now.date()
+    today_str = today_date.isoformat()
     week_ago = now - timedelta(days=7)
 
     today_count = 0
     week_count = 0
     for r in records:
         ts = r.get("timestamp", "")
-        if ts.startswith(today_str):
-            today_count += 1
+        dt = None
         try:
             dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
-            continue
-        # Legacy records may store naive timestamps; treat them as UTC.
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        if dt >= week_ago:
-            week_count += 1
+            pass
+
+        if dt is not None:
+            if dt.date() == today_date:
+                today_count += 1
+            if dt >= week_ago:
+                week_count += 1
+        elif ts.startswith(today_str):
+            today_count += 1
 
     # Source breakdown — records without 'source' are treated as 'email'
     link_count = sum(1 for r in records if r.get("source") == "link")

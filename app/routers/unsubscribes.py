@@ -62,9 +62,18 @@ async def update_unsub_settings(request: Request):
 
 @router.get("")
 async def get_unsubscribes(page: int = Query(1, ge=1, le=MAX_PAGE),
-                           per_page: int = Query(25, ge=1, le=MAX_PER_PAGE)):
+                           per_page: int = Query(25, ge=1, le=MAX_PER_PAGE),
+                           query: str = Query("", max_length=100)):
     """Return paginated unsubscribe records (newest first)."""
     records = load_log()
+    if query:
+        q = query.lower().strip()
+        records = [
+            r for r in records
+            if q in (r.get("email") or "").lower()
+            or q in (r.get("name") or "").lower()
+            or q in (r.get("campaign_name") or "").lower()
+        ]
     records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
     total = len(records)
     start = (page - 1) * per_page
@@ -80,13 +89,15 @@ async def get_unsubscribes(page: int = Query(1, ge=1, le=MAX_PAGE),
 
 
 @router.get("/stats")
-async def get_unsubscribe_stats(campaign_id: int = 0):
+async def get_unsubscribe_stats(campaign_id: str = ""):
     """Return aggregate unsubscribe counts. Optionally filter by campaign_id."""
     stats = get_stats()
     if campaign_id:
         records = load_log()
-        campaign_count = sum(1 for r in records if r.get("campaign_id") == campaign_id)
-        stats["campaign_count"] = campaign_count
+        campaign_records = [r for r in records if _matches_campaign_id(r.get("campaign_id"), campaign_id)]
+        stats["campaign_count"] = len(campaign_records)
+        stats["campaign_link_count"] = sum(1 for r in campaign_records if r.get("source") == "link")
+        stats["campaign_email_count"] = len(campaign_records) - stats["campaign_link_count"]
     return stats
 
 
@@ -103,7 +114,9 @@ async def get_campaign_groups():
     groups: dict = {}
 
     for r in records:
-        cid = r.get("campaign_id") or "unknown"
+        cid = r.get("campaign_id")
+        if cid is None or cid == 0 or cid == "0":
+            cid = "unknown"
         group_key = str(cid)
         if group_key not in groups:
             groups[group_key] = {
@@ -118,11 +131,20 @@ async def get_campaign_groups():
         groups[group_key]["count"] += 1
         if r.get("campaign_deleted"):
             groups[group_key]["campaign_deleted"] = True
+        if not groups[group_key]["campaign_name"] and r.get("campaign_name"):
+            groups[group_key]["campaign_name"] = r.get("campaign_name")
+        if (groups[group_key]["campaign_key"] == "unknown" or not groups[group_key]["campaign_key"]) and r.get("campaign_key") and r.get("campaign_key") != "unknown":
+            groups[group_key]["campaign_key"] = r.get("campaign_key")
 
-    # Sort by campaign_key descending (most recent month first), then by campaign name
+    # Sort: known campaign_keys descending (newest first), then 'unknown' at the bottom
+    def _group_sort_key(g):
+        ck = g.get("campaign_key") or ""
+        is_known = 1 if ck and ck != "unknown" else 0
+        return (is_known, ck, g.get("campaign_name", ""))
+
     sorted_groups = sorted(
         groups.values(),
-        key=lambda g: (g["campaign_key"], g.get("campaign_name", "")),
+        key=_group_sort_key,
         reverse=True,
     )
     return {"data": sorted_groups}
@@ -132,13 +154,13 @@ def _matches_campaign_id(record_cid: Any, target_cid: str) -> bool:
     """Match a record's campaign_id (int or None) against a string parameter.
 
     Handles numeric IDs ('12'), string IDs ('12'), and unattributed records
-    grouped under 'unknown', 'none', 'null', or empty string.
+    grouped under 'unknown', 'none', 'null', '0', or empty string.
     """
     if target_cid.lower() in ("unknown", "none", "null", ""):
-        return record_cid is None or record_cid == "unknown"
+        return record_cid is None or record_cid in ("unknown", 0, "0")
     try:
         target_int = int(target_cid)
-        return record_cid == target_int
+        return record_cid == target_int or str(record_cid) == target_cid
     except (ValueError, TypeError):
         return str(record_cid) == target_cid
 
@@ -146,21 +168,43 @@ def _matches_campaign_id(record_cid: Any, target_cid: str) -> bool:
 @router.get("/campaign/{campaign_id}")
 async def get_campaign_records(campaign_id: str,
                                page: int = Query(1, ge=1, le=MAX_PAGE),
-                               per_page: int = Query(50, ge=1, le=MAX_PER_PAGE)):
+                               per_page: int = Query(50, ge=1, le=MAX_PER_PAGE),
+                               query: str = Query("", max_length=100),
+                               source: str = Query("", max_length=20)):
     """Return paginated records for a specific campaign by its ID (or 'unknown')."""
     records = load_log()
     campaign_records = [r for r in records if _matches_campaign_id(r.get("campaign_id"), campaign_id)]
-    campaign_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
 
-    total = len(campaign_records)
+    total_unfiltered = len(campaign_records)
     link_count = sum(1 for r in campaign_records if r.get("source") == "link")
-    email_count = total - link_count
+    email_count = total_unfiltered - link_count
+
+    filtered_records = campaign_records
+    if source:
+        s = source.lower().strip()
+        if s == "link":
+            filtered_records = [r for r in filtered_records if r.get("source") == "link"]
+        elif s == "email":
+            filtered_records = [r for r in filtered_records if r.get("source") != "link"]
+    if query:
+        q = query.lower().strip()
+        filtered_records = [
+            r for r in filtered_records
+            if q in (r.get("email") or "").lower()
+            or q in (r.get("name") or "").lower()
+            or q in (r.get("keyword") or "").lower()
+        ]
+
+    filtered_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+
+    total = len(filtered_records)
     start = (page - 1) * per_page
     end = start + per_page
     return {
         "data": {
-            "results": campaign_records[start:end],
+            "results": filtered_records[start:end],
             "total": total,
+            "total_unfiltered": total_unfiltered,
             "link_count": link_count,
             "email_count": email_count,
             "page": page,
@@ -184,12 +228,19 @@ async def delete_campaign_group(campaign_id: str):
 
 
 @router.delete("/records")
-async def delete_records(emails: list[str] = Query(default=[])):
-    """Delete specific unsubscribe records by email."""
+async def delete_records(emails: list[str] = Query(default=[]),
+                         campaign_id: str | None = Query(default=None)):
+    """Delete specific unsubscribe records by email, optionally scoped to a campaign."""
     async with _log_lock:
         records = load_log()
         before_count = len(records)
-        remaining = [r for r in records if r.get("email") not in emails]
+        if campaign_id is not None:
+            remaining = [
+                r for r in records
+                if not (r.get("email") in emails and _matches_campaign_id(r.get("campaign_id"), campaign_id))
+            ]
+        else:
+            remaining = [r for r in records if r.get("email") not in emails]
         removed = before_count - len(remaining)
         save_log(remaining)
     return {"removed": removed, "message": f"Removed {removed} record(s)"}
@@ -204,8 +255,9 @@ async def export_campaign_csv(campaign_id: str):
         raise HTTPException(status_code=404, detail="No records found for this campaign")
 
     campaign_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
-    columns = ["email", "name", "keyword", "campaign_name", "campaign_key", "timestamp"]
-    filename = f"unsubscribes_campaign_{campaign_id}.csv"
+    columns = ["email", "name", "source", "keyword", "campaign_name", "campaign_key", "timestamp"]
+    safe_cid = "".join(c if c.isalnum() or c in "-_" else "_" for c in campaign_id)
+    filename = f"unsubscribes_campaign_{safe_cid}.csv"
     return StreamingResponse(
         dict_list_to_csv(campaign_records, columns),
         media_type="text/csv",
@@ -221,7 +273,7 @@ async def export_unsubscribes():
         raise HTTPException(status_code=404, detail="No unsubscribe records found")
 
     records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
-    columns = ["email", "name", "campaign_name", "campaign_key", "campaign_id", "keyword", "subject", "subscriber_id", "timestamp"]
+    columns = ["email", "name", "source", "campaign_name", "campaign_key", "campaign_id", "keyword", "subject", "subscriber_id", "timestamp"]
     return StreamingResponse(
         dict_list_to_csv(records, columns),
         media_type="text/csv",

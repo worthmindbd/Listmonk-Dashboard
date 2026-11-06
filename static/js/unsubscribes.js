@@ -7,17 +7,21 @@ const Unsubscribes = {
     imapStatus: null,
     campaignGroups: [],
     settings: { blocklist_enabled: false },
+    campaignFilterQuery: '',
     // Detail view state
     activeCampaign: null,
     campaignRecords: { results: [], total: 0 },
     campaignPage: 1,
     campaignPerPage: 50,
+    campaignSearchQuery: '',
+    campaignSourceFilter: '',
     selectedEmails: new Set(),
 
     /* ── Helpers ──────────────────────────────────────────── */
     /** Convert YYYY-MM key to readable label, e.g. "March 2026" */
     formatCampaignDate(key) {
         if (!key) return 'Unknown';
+        if (key === 'unknown') return 'Unattributed';
         const months = ['January','February','March','April','May','June',
                         'July','August','September','October','November','December'];
         const parts = key.split('-');
@@ -32,8 +36,8 @@ const Unsubscribes = {
     /** Strip leading date prefix from raw Listmonk campaign name */
     cleanCampaignName(name) {
         if (!name || name === 'Unknown') return 'No matching campaign';
-        // Strip leading YYYYMMDD or YYYY-MM-DD prefix
-        let cleaned = name.replace(/^\d{4}-?\d{2}-?\d{2}\s*/, '').trim();
+        // Strip leading YYYYMMDD or YYYY-MM-DD prefix with separator
+        let cleaned = name.replace(/^\d{4}-?\d{2}-?\d{2}[\s\-_:]*/, '').trim();
         return cleaned || name;
     },
 
@@ -65,8 +69,10 @@ const Unsubscribes = {
             this.campaignGroups = groupsRes.status === 'fulfilled' ? (groupsRes.value.data || []) : [];
             this.settings = settingsRes.status === 'fulfilled' ? settingsRes.value : { blocklist_enabled: false };
 
-            // If we're in detail view, stay there
+            // If we're in detail view, stay there and re-sync active campaign
             if (this.activeCampaign) {
+                const fresh = this.campaignGroups.find(g => String(g.campaign_id) === String(this.activeCampaign.campaign_id));
+                if (fresh) this.activeCampaign = fresh;
                 await this.loadCampaignRecords(this.activeCampaign.campaign_id);
                 if (!App.isRenderCurrent(gen)) return;
                 this.renderDetailView();
@@ -84,9 +90,10 @@ const Unsubscribes = {
         this.activeCampaign = null;
         this.selectedEmails.clear();
 
-        const stats = this.stats;
-        const imap = this.imapStatus;
-        const groups = this.campaignGroups;
+        const stats = this.stats || { total: 0, today: 0, this_week: 0 };
+        const imap = this.imapStatus || { configured: false, connected: false };
+        const groups = this.campaignGroups || [];
+        const hasRecords = Boolean(stats.total && stats.total > 0);
 
         // IMAP badge
         let imapBadge;
@@ -95,24 +102,36 @@ const Unsubscribes = {
         } else if (imap.connected) {
             imapBadge = '<span class="badge badge-success" style="font-size:0.85rem;padding:6px 14px">IMAP Connected</span>';
         } else {
-            imapBadge = `<span class="badge badge-danger" style="font-size:0.85rem;padding:6px 14px">IMAP Error: ${App.escapeHtml(imap.error || 'Unknown')}</span>`;
+            const errDetail = App.escapeHtml(imap.error || 'Unknown');
+            imapBadge = `<span class="badge badge-danger" style="font-size:0.85rem;padding:6px 14px" title="${errDetail}">IMAP Error: ${errDetail}</span>`;
         }
 
         // Top bar actions
         App.setActions(`
-            <button class="btn btn-sm" onclick="Unsubscribes.exportAllCSV()">
+            <button class="btn btn-sm" id="unsubExportAllBtn" onclick="Unsubscribes.exportAllCSV()" ${!hasRecords ? 'disabled' : ''}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Export All
             </button>
-            <button class="btn btn-sm" onclick="Unsubscribes.resetAll()" title="Undo all unsubscribes and restore list memberships">
+            <button class="btn btn-sm" id="unsubUndoBtn" onclick="Unsubscribes.resetAll()" ${!hasRecords ? 'disabled' : ''} title="Undo all unsubscribes and restore list memberships">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
                 Undo All
             </button>
-            <button class="btn btn-sm btn-primary" onclick="Unsubscribes.triggerScan()">
+            <button class="btn btn-sm btn-primary" id="unsubScanBtn" onclick="Unsubscribes.triggerScan()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 Scan Now
             </button>
         `);
+
+        // Filter groups by user query
+        const q = (this.campaignFilterQuery || '').toLowerCase().trim();
+        const filteredGroups = q
+            ? groups.filter(g => {
+                const name = (g.campaign_name || '').toLowerCase();
+                const key = (g.campaign_key || '').toLowerCase();
+                const dateLabel = this.formatCampaignDate(g.campaign_key).toLowerCase();
+                return name.includes(q) || key.includes(q) || dateLabel.includes(q);
+            })
+            : groups;
 
         let html = `
             <!-- IMAP Status -->
@@ -139,9 +158,9 @@ const Unsubscribes = {
                     </div>
                     <div class="unsub-action-toggle">
                         <span style="color:var(--text-muted)">Action:</span>
-                        <strong>${this.settings.blocklist_enabled ? 'Unsubscribe + Blocklist' : 'Unsubscribe Only'}</strong>
+                        <strong id="unsubActionLabel">${this.settings.blocklist_enabled ? 'Unsubscribe + Blocklist' : 'Unsubscribe Only'}</strong>
                         <label class="toggle-switch" style="margin-left:4px" title="Toggle blocklist: when ON, leads are also blocklisted">
-                            <input type="checkbox" ${this.settings.blocklist_enabled ? 'checked' : ''} onchange="Unsubscribes.toggleBlocklist(this.checked)">
+                            <input type="checkbox" id="unsubBlocklistToggle" ${this.settings.blocklist_enabled ? 'checked' : ''} onchange="Unsubscribes.toggleBlocklist(this.checked)">
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
@@ -177,18 +196,36 @@ const Unsubscribes = {
                     <span style="color:var(--text-muted);font-size:0.85rem">${groups.length} campaign(s)</span>
                 </div>`;
 
+        if (groups.length > 0) {
+            html += `
+                <div class="search-bar" style="margin-top:16px;margin-bottom:16px">
+                    <div class="search-input">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <input type="search" id="unsubCampaignSearch" placeholder="Filter campaigns by name or date..."
+                            value="${App.escapeHtml(this.campaignFilterQuery)}"
+                            oninput="Unsubscribes.filterCampaigns(this.value)">
+                    </div>
+                    ${this.campaignFilterQuery ? '<button class="btn btn-secondary" onclick="Unsubscribes.clearCampaignFilter()">Clear</button>' : ''}
+                </div>`;
+        }
+
         if (!groups.length) {
             html += `
                 <div class="empty-state" style="padding:40px">
                     <h3>No unsubscribe campaigns detected</h3>
                     <p>The system monitors your inbox every hour. Unsubscribes will be grouped by campaign month.</p>
                 </div>`;
+        } else if (!filteredGroups.length) {
+            html += `
+                <div class="empty-state" style="padding:30px">
+                    <p>No campaigns match "${App.escapeHtml(this.campaignFilterQuery)}"</p>
+                </div>`;
         } else {
             html += '<div class="unsub-campaigns-list">';
-            groups.forEach(g => {
+            filteredGroups.forEach(g => {
                 const readableDate = this.formatCampaignDate(g.campaign_key);
                 const cleanName = App.escapeHtml(this.cleanCampaignName(g.campaign_name));
-                const cidArg = JSON.stringify(g.campaign_id);
+                const cidArg = App.escapeHtml(JSON.stringify(g.campaign_id));
                 html += `
                     <div class="unsub-campaign-card" onclick="Unsubscribes.openCampaign(${cidArg})">
                         <div class="unsub-campaign-header">
@@ -211,11 +248,29 @@ const Unsubscribes = {
         App.setContent(html);
     },
 
+    filterCampaigns(query) {
+        this.campaignFilterQuery = query || '';
+        this.renderListView();
+        const input = document.getElementById('unsubCampaignSearch');
+        if (input) {
+            input.focus();
+            input.selectionStart = input.selectionEnd = input.value.length;
+        }
+    },
+
+    clearCampaignFilter() {
+        this.campaignFilterQuery = '';
+        this.renderListView();
+    },
+
     /* ── Detail View — shows records for a single campaign ── */
     async openCampaign(campaignId) {
         const gen = App.beginRender();
-        this.activeCampaign = this.campaignGroups.find(g => g.campaign_id === campaignId) || { campaign_id: campaignId, campaign_key: 'unknown', campaign_name: 'No matching campaign', count: 0 };
+        this.activeCampaign = this.campaignGroups.find(g => String(g.campaign_id) === String(campaignId))
+            || { campaign_id: campaignId, campaign_key: 'unknown', campaign_name: 'No matching campaign', count: 0 };
         this.campaignPage = 1;
+        this.campaignSearchQuery = '';
+        this.campaignSourceFilter = '';
         this.selectedEmails.clear();
 
         App.setContent('<div class="loading-spinner">Loading campaign records...</div>');
@@ -227,15 +282,29 @@ const Unsubscribes = {
 
     async loadCampaignRecords(campaignId) {
         try {
-            const res = await API.get(`/api/unsubscribes/campaign/${campaignId}?page=${this.campaignPage}&per_page=${this.campaignPerPage}`);
+            const cid = encodeURIComponent(String(campaignId));
+            const queryParam = this.campaignSearchQuery ? `&query=${encodeURIComponent(this.campaignSearchQuery)}` : '';
+            const sourceParam = this.campaignSourceFilter ? `&source=${encodeURIComponent(this.campaignSourceFilter)}` : '';
+            const url = `/api/unsubscribes/campaign/${cid}?page=${this.campaignPage}&per_page=${this.campaignPerPage}${queryParam}${sourceParam}`;
+            const res = await API.get(url);
             this.campaignRecords = res.data || { results: [], total: 0 };
+
+            // Clamp page if deletions or search caused current page to exceed max page
+            const total = this.campaignRecords.total || 0;
+            const maxPage = Math.max(1, Math.ceil(total / this.campaignPerPage));
+            if (this.campaignPage > maxPage && total > 0) {
+                this.campaignPage = maxPage;
+                const retryUrl = `/api/unsubscribes/campaign/${cid}?page=${this.campaignPage}&per_page=${this.campaignPerPage}${queryParam}${sourceParam}`;
+                const retryRes = await API.get(retryUrl);
+                this.campaignRecords = retryRes.data || { results: [], total: 0 };
+            }
         } catch {
             this.campaignRecords = { results: [], total: 0 };
         }
     },
 
     renderDetailView() {
-        const camp = this.activeCampaign;
+        const camp = this.activeCampaign || { campaign_id: 'unknown', campaign_key: 'unknown', campaign_name: 'No matching campaign' };
         const data = this.campaignRecords;
         const records = data.results || [];
         const total = data.total || 0;
@@ -247,15 +316,15 @@ const Unsubscribes = {
 
         // Top bar actions
         App.setActions(`
-            <button class="btn btn-sm ${hasSelected ? 'btn-danger' : ''}" onclick="Unsubscribes.bulkDeleteSelected()" ${!hasSelected ? 'disabled' : ''}>
+            <button class="btn btn-sm ${hasSelected ? 'btn-danger' : ''}" id="unsubBulkDeleteBtn" onclick="Unsubscribes.bulkDeleteSelected()" ${!hasSelected ? 'disabled' : ''}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 Delete Selected${hasSelected ? ` (${this.selectedEmails.size})` : ''}
             </button>
-            <button class="btn btn-sm" onclick="Unsubscribes.exportCampaignCSV(${JSON.stringify(camp.campaign_id)})">
+            <button class="btn btn-sm" onclick="Unsubscribes.exportCampaignCSV()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Export CSV
             </button>
-            <button class="btn btn-sm btn-danger" onclick="Unsubscribes.removeCampaign(${JSON.stringify(camp.campaign_id)})">
+            <button class="btn btn-sm btn-danger" onclick="Unsubscribes.removeCampaign()">
                 Remove List
             </button>
         `);
@@ -281,7 +350,7 @@ const Unsubscribes = {
             <div class="stats-grid" style="margin-bottom:20px">
                 <div class="stat-card accent">
                     <div class="stat-label">Total Unsubscribes</div>
-                    <div class="stat-value">${App.formatNumber(total)}</div>
+                    <div class="stat-value">${App.formatNumber(data.total_unfiltered ?? total)}</div>
                 </div>
                 <div class="stat-card warning">
                     <div class="stat-label">Email Replies</div>
@@ -293,16 +362,32 @@ const Unsubscribes = {
                 </div>
             </div>
 
-            <!-- Records table -->
+            <!-- Records table card -->
             <div class="card">
-                <div class="table-wrapper"><table>
+                <div class="search-bar" style="margin-bottom:16px">
+                    <div class="search-input">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <input type="search" id="unsubRecordSearch" placeholder="Search by email, name, or keyword..."
+                            value="${App.escapeHtml(this.campaignSearchQuery)}"
+                            onkeydown="if(event.key==='Enter')Unsubscribes.searchRecords()">
+                    </div>
+                    <select id="unsubSourceFilter" onchange="Unsubscribes.filterSource(this.value)" style="width:auto">
+                        <option value="" ${!this.campaignSourceFilter ? 'selected' : ''}>All Sources</option>
+                        <option value="email" ${this.campaignSourceFilter === 'email' ? 'selected' : ''}>Email Replies</option>
+                        <option value="link" ${this.campaignSourceFilter === 'link' ? 'selected' : ''}>Link Clicks</option>
+                    </select>
+                    <button class="btn" onclick="Unsubscribes.searchRecords()">Search</button>
+                    ${(this.campaignSearchQuery || this.campaignSourceFilter) ? '<button class="btn btn-secondary" onclick="Unsubscribes.clearDetailSearch()">Clear</button>' : ''}
+                </div>
+
+                <div class="table-wrapper"><table id="unsubRecordsTable">
                     <thead><tr>
-                        <th style="width:30px"><input type="checkbox" onchange="Unsubscribes.toggleSelectAll(this)" ${this._isPageFullySelected() ? 'checked' : ''}/></th>
+                        <th style="width:30px"><input type="checkbox" id="unsubSelectAll" onchange="Unsubscribes.toggleSelectAll(this)" ${!records.length ? 'disabled' : ''} ${this._isPageFullySelected() ? 'checked' : ''}/></th>
                         <th>#</th><th>Email</th><th>Name</th><th>Type</th><th>Date</th><th>Actions</th>
                     </tr></thead><tbody>`;
 
         if (!records.length) {
-            html += '<tr><td colspan="7"><div class="empty-state"><p>No records</p></div></td></tr>';
+            html += '<tr><td colspan="7"><div class="empty-state"><p>No records found</p></div></td></tr>';
         }
 
         records.forEach((r, i) => {
@@ -333,10 +418,37 @@ const Unsubscribes = {
         App.setContent(html);
     },
 
+    /* ── Search in Detail View ────────────────────────────── */
+    async searchRecords() {
+        const input = document.getElementById('unsubRecordSearch');
+        this.campaignSearchQuery = (input ? input.value : '').trim();
+        this.campaignPage = 1;
+        await this.loadCampaignRecords(this.activeCampaign.campaign_id);
+        this.renderDetailView();
+    },
+
+    async filterSource(source) {
+        this.campaignSourceFilter = source || '';
+        this.campaignPage = 1;
+        await this.loadCampaignRecords(this.activeCampaign.campaign_id);
+        this.renderDetailView();
+    },
+
+    async clearDetailSearch() {
+        this.campaignSearchQuery = '';
+        this.campaignSourceFilter = '';
+        this.campaignPage = 1;
+        await this.loadCampaignRecords(this.activeCampaign.campaign_id);
+        this.renderDetailView();
+    },
+
     /* ── Navigation ───────────────────────────────────────── */
     backToList() {
         this.activeCampaign = null;
         this.selectedEmails.clear();
+        this.campaignSearchQuery = '';
+        this.campaignSourceFilter = '';
+        this.campaignPage = 1;
         this.renderListView();
     },
 
@@ -352,6 +464,24 @@ const Unsubscribes = {
         return emails.length > 0 && emails.every(e => this.selectedEmails.has(e));
     },
 
+    _updateSelectionUI() {
+        const count = this.selectedEmails.size;
+        const hasSelected = count > 0;
+        const deleteBtn = document.getElementById('unsubBulkDeleteBtn');
+        if (deleteBtn) {
+            deleteBtn.disabled = !hasSelected;
+            deleteBtn.classList.toggle('btn-danger', hasSelected);
+            deleteBtn.innerHTML = `
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                Delete Selected${hasSelected ? ` (${count})` : ''}
+            `;
+        }
+        const selectAllBox = document.getElementById('unsubSelectAll');
+        if (selectAllBox) {
+            selectAllBox.checked = this._isPageFullySelected();
+        }
+    },
+
     toggleSelect(idx) {
         const records = this.campaignRecords.results || [];
         const email = records[idx]?.email;
@@ -361,19 +491,21 @@ const Unsubscribes = {
         } else {
             this.selectedEmails.add(email);
         }
-        this.renderDetailView();
+        this._updateSelectionUI();
     },
 
     toggleSelectAll(checkbox) {
-        // Scoped to the current page: selectedEmails can hold rows from other
-        // pages, so comparing set size to this page's length is meaningless.
         const emails = this._pageEmails();
         if (checkbox.checked) {
             emails.forEach(e => this.selectedEmails.add(e));
         } else {
             emails.forEach(e => this.selectedEmails.delete(e));
         }
-        this.renderDetailView();
+        const rowBoxes = document.querySelectorAll('#unsubRecordsTable tbody input[type="checkbox"]');
+        rowBoxes.forEach(box => {
+            box.checked = this.selectedEmails.has(box.value);
+        });
+        this._updateSelectionUI();
     },
 
     /* ── Pagination ───────────────────────────────────────── */
@@ -393,7 +525,8 @@ const Unsubscribes = {
         if (!await App.confirm('Remove Record',
                 `Remove "${email}" from this campaign's unsubscribe list?`)) return;
         try {
-            await API.del(`/api/unsubscribes/records?emails=${encodeURIComponent(email)}`);
+            const campParam = this.activeCampaign ? `&campaign_id=${encodeURIComponent(String(this.activeCampaign.campaign_id))}` : '';
+            await API.del(`/api/unsubscribes/records?emails=${encodeURIComponent(email)}${campParam}`);
             App.toast(`Removed ${email}`, 'success');
             this.selectedEmails.delete(email);
             await this.render();
@@ -409,7 +542,8 @@ const Unsubscribes = {
                 `Remove ${count} selected record(s)? This cannot be undone.`)) return;
         try {
             const emailParams = [...this.selectedEmails].map(e => `emails=${encodeURIComponent(e)}`).join('&');
-            await API.del(`/api/unsubscribes/records?${emailParams}`);
+            const campParam = this.activeCampaign ? `&campaign_id=${encodeURIComponent(String(this.activeCampaign.campaign_id))}` : '';
+            await API.del(`/api/unsubscribes/records?${emailParams}${campParam}`);
             App.toast(`Removed ${count} record(s)`, 'success');
             this.selectedEmails.clear();
             await this.render();
@@ -419,10 +553,12 @@ const Unsubscribes = {
     },
 
     async removeCampaign(campaignId) {
+        const cid = campaignId !== undefined ? campaignId : this.activeCampaign?.campaign_id;
+        if (cid === undefined || cid === null) return;
         if (!await App.confirm('Remove Campaign Records',
                 'Remove ALL unsubscribe records for this campaign? This cannot be undone.')) return;
         try {
-            const res = await API.del(`/api/unsubscribes/campaign/${campaignId}`);
+            const res = await API.del(`/api/unsubscribes/campaign/${encodeURIComponent(String(cid))}`);
             App.toast(res.message || 'Campaign removed', 'success');
             this.activeCampaign = null;
             await this.render();
@@ -433,10 +569,12 @@ const Unsubscribes = {
 
     /* ── Export ────────────────────────────────────────────── */
     async exportCampaignCSV(campaignId) {
+        const cid = campaignId !== undefined ? campaignId : this.activeCampaign?.campaign_id;
+        if (cid === undefined || cid === null) return;
         try {
-            const result = await API.get(`/api/unsubscribes/campaign/${campaignId}/export`);
+            const result = await API.get(`/api/unsubscribes/campaign/${encodeURIComponent(String(cid))}/export`);
             if (result.blob) {
-                API.downloadBlob(result.blob, `unsubscribes_campaign_${campaignId}.csv`);
+                API.downloadBlob(result.blob, `unsubscribes_campaign_${cid}.csv`);
                 App.toast('Campaign exported', 'success');
             }
         } catch {
@@ -458,8 +596,7 @@ const Unsubscribes = {
 
     /* ── Scan ─────────────────────────────────────────────── */
     async triggerScan() {
-        // Disable button while scanning
-        const scanBtn = document.querySelector('[onclick="Unsubscribes.triggerScan()"]');
+        const scanBtn = document.getElementById('unsubScanBtn');
         if (scanBtn) {
             scanBtn.disabled = true;
             scanBtn.innerHTML = `
@@ -468,7 +605,7 @@ const Unsubscribes = {
                 </svg>
                 Scanning...`;
         }
-        App.toast('Scanning inbox...', 'info');
+        App.toast('Scanning inbox and lists...', 'info');
         try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 60000);
@@ -482,7 +619,6 @@ const Unsubscribes = {
                 return;
             }
             if (!resp.ok) {
-                // Parse defensively: a proxy 5xx may return an HTML error page.
                 let detail = `Scan failed (HTTP ${resp.status})`;
                 try {
                     const errBody = await resp.json();
@@ -492,7 +628,7 @@ const Unsubscribes = {
                 return;
             }
             const result = await resp.json();
-            const imapData = result.imap || result;  // supports both old and new format
+            const imapData = result.imap || result;
             const linkData = result.link || {};
             const totalProcessed = (imapData.processed || 0) + (linkData.processed || 0);
             const msg = `Scanned ${imapData.scanned || 0} emails + ${linkData.scanned_lists || 0} lists — ${totalProcessed} unsubscribed`;
@@ -518,30 +654,45 @@ const Unsubscribes = {
 
     /* ── Settings ─────────────────────────────────────────── */
     async toggleBlocklist(enabled) {
+        const toggle = document.getElementById('unsubBlocklistToggle');
+        const label = document.getElementById('unsubActionLabel');
         try {
             await API.put('/api/unsubscribes/settings', { blocklist_enabled: enabled });
             this.settings.blocklist_enabled = enabled;
+            if (label) label.textContent = enabled ? 'Unsubscribe + Blocklist' : 'Unsubscribe Only';
             App.toast(`Action set to: ${enabled ? 'Unsubscribe + Blocklist' : 'Unsubscribe Only'}`, 'success');
-            // Re-render to update the label
-            this.renderListView();
         } catch {
-            // API.request already surfaced the server message; just revert the
-            // toggle to match the still-active setting.
             this.settings.blocklist_enabled = !enabled;
-            this.renderListView();
+            if (toggle) toggle.checked = !enabled;
+            if (label) label.textContent = !enabled ? 'Unsubscribe + Blocklist' : 'Unsubscribe Only';
         }
     },
 
     async resetAll() {
         if (!await App.confirm('Undo All Unsubscribes',
             'This will UNDO all unsubscribes — re-enable and re-subscribe all processed leads in ListMonk, then remove restored records from the log. Continue?')) return;
+
+        const undoBtn = document.getElementById('unsubUndoBtn');
+        if (undoBtn) {
+            undoBtn.disabled = true;
+            undoBtn.innerHTML = `
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px;animation:spin 1s linear infinite"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
+                Resetting...`;
+        }
         App.toast('Resetting all unsubscribes...', 'info');
         try {
             const result = await API.post('/api/unsubscribes/reset');
-            App.toast(result.message || 'Reset complete', 'success');
+            App.toast(result.message || 'Reset complete', (result.failed || 0) > 0 ? 'warning' : 'success');
             await this.render();
         } catch {
             // API.request already surfaced the server message.
+        } finally {
+            if (undoBtn) {
+                undoBtn.disabled = false;
+                undoBtn.innerHTML = `
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
+                    Undo All`;
+            }
         }
     },
 };

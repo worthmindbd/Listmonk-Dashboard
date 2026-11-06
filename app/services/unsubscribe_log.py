@@ -99,7 +99,11 @@ def _atomic_write_json(file_path: Path, data: Any, indent: int = 2, ensure_ascii
 
 def load_log() -> list[dict]:
     try:
-        records = json.loads(LOG_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(LOG_FILE.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            _backup_corrupt_file(LOG_FILE)
+            return []
+        records = [r for r in raw if isinstance(r, dict)]
         migrated = False
         for r in records:
             old_key = r.get("campaign_key", "")
@@ -107,7 +111,7 @@ def load_log() -> list[dict]:
             if new_key != old_key:
                 r["campaign_key"] = new_key
                 migrated = True
-        if migrated:
+        if migrated or len(records) != len(raw):
             save_log(records)
         return records
     except json.JSONDecodeError:
