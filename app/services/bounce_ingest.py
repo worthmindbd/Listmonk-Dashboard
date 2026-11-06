@@ -13,16 +13,21 @@ threshold on hard bounces). This module never calls blocklist directly.
 
 import asyncio
 import email
+import email.message
 import email.policy
 import email.utils
+import hashlib
 import imaplib
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import httpx
+
 from app.config import settings
 from app.services.bounce_filters import subscriber_opened_campaign
+from app.services.campaign_attribution import campaign_sent_at, is_sent_campaign
 from app.services.listmonk_client import ListMonkClient
 
 logger = logging.getLogger("bounce_ingest")
@@ -123,47 +128,119 @@ def classify_bounce(body: str, subject: str = "") -> dict:
 
 # ─── Parsing helpers ─────────────────────────────────────────────────────────
 
-_BOUNCE_CONTENT_TYPES = ("text/plain", "message/delivery-status")
+_ADDR_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
+
+# Parts that carry the ORIGINAL message we sent. Their text must never feed
+# classification or recipient extraction: it is our own newsletter copy, and
+# any address in it would be mistaken for the bounced recipient.
+_ORIGINAL_MESSAGE_TYPES = ("message/rfc822", "text/rfc822-headers")
+
+
+def _delivery_status_blocks(part: email.message.Message) -> list:
+    """Header blocks of a ``message/delivery-status`` part (RFC 3464).
+
+    Python parses the part as a container whose payload is a list of header
+    blocks (per-message, then one per recipient). ``get_payload(decode=True)``
+    therefore returns None and ``str(get_payload())`` is a list repr, which is
+    why ``Final-Recipient``/``Status`` used to be invisible.
+    """
+    payload = part.get_payload()
+    if isinstance(payload, list):
+        return [b for b in payload if hasattr(b, "items")]
+    if isinstance(payload, str) and payload.strip():
+        # Some generators emit it as an unparsed text body; parse ourselves.
+        return [email.message_from_string(chunk, policy=email.policy.default)
+                for chunk in re.split(r"\r?\n\s*\r?\n", payload.strip()) if chunk.strip()]
+    return []
+
+
+def _delivery_status_text(part: email.message.Message) -> str:
+    lines = []
+    for block in _delivery_status_blocks(part):
+        for name, value in block.items():
+            lines.append(f"{name}: {value}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _iter_report_parts(msg: email.message.Message):
+    """Walk a bounce, yielding its own parts but not the attached original."""
+    ct = msg.get_content_type()
+    if ct in _ORIGINAL_MESSAGE_TYPES:
+        return
+    if ct == "message/delivery-status":
+        yield msg
+        return
+    if msg.is_multipart():
+        for sub in msg.get_payload():
+            yield from _iter_report_parts(sub)
+    else:
+        yield msg
 
 
 def _extract_body(msg: email.message.EmailMessage) -> str:
-    return extract_email_body(msg, content_types=_BOUNCE_CONTENT_TYPES)
+    """Human-readable notice + machine-readable DSN fields of a bounce."""
+    chunks = []
+    for part in _iter_report_parts(msg):
+        ct = part.get_content_type()
+        if ct == "message/delivery-status":
+            chunks.append(_delivery_status_text(part))
+        elif ct == "text/plain":
+            payload = part.get_payload(decode=True)
+            if payload:
+                charset = part.get_content_charset() or "utf-8"
+                try:
+                    chunks.append(payload.decode(charset, errors="replace"))
+                except (LookupError, UnicodeDecodeError):
+                    chunks.append(payload.decode("utf-8", errors="replace"))
+    return "\n".join(chunks)
+
+
+def _addr_from_recipient_field(value) -> Optional[str]:
+    """``rfc822; user@example.com`` → ``user@example.com``."""
+    val = str(value or "")
+    if ";" in val:
+        val = val.split(";", 1)[1]
+    match = _ADDR_RE.search(val)
+    return match.group(0).lower() if match else None
 
 
 def _extract_bounced_recipient(msg: email.message.EmailMessage, body: str) -> Optional[str]:
-    for header in ("X-Failed-Recipients", "X-Original-To",
-                   "Original-Recipient", "Final-Recipient"):
-        val = msg.get(header, "")
-        if val:
-            if ";" in val:
-                val = val.split(";", 1)[1].strip()
-            match = re.search(r"[\w.+-]+@[\w.-]+\.\w+", val)
-            if match:
-                return match.group(0).lower()
+    own_addr = (settings.bounce_imap_user or "").lower()
 
-    if msg.is_multipart():
-        for part in msg.walk():
-            if part.get_content_type() == "message/delivery-status":
-                payload = part.get_payload(decode=True)
-                dsn_text = payload.decode("utf-8", errors="replace") if payload else str(part.get_payload())
-                for line in dsn_text.splitlines():
-                    if line.lower().startswith(("final-recipient:", "original-recipient:")):
-                        match = re.search(r"[\w.+-]+@[\w.-]+\.\w+", line)
-                        if match:
-                            return match.group(0).lower()
+    def usable(addr: Optional[str]) -> Optional[str]:
+        return addr if addr and addr != own_addr else None
 
+    # 1. RFC 3464 per-recipient fields — the authoritative source.
+    for part in _iter_report_parts(msg):
+        if part.get_content_type() != "message/delivery-status":
+            continue
+        for block in _delivery_status_blocks(part):
+            for field in ("Final-Recipient", "Original-Recipient"):
+                addr = usable(_addr_from_recipient_field(block.get(field)))
+                if addr:
+                    return addr
+
+    # 2. Non-standard top-level headers (Exim / Gmail). X-Original-To is NOT
+    #    consulted: on a delivered bounce it names our own bounce mailbox.
+    for header in ("X-Failed-Recipients", "Original-Recipient", "Final-Recipient"):
+        addr = usable(_addr_from_recipient_field(msg.get(header, "")))
+        if addr:
+            return addr
+
+    # 3. Free-text fallback over the report text only (never the original).
     patterns = [
         re.compile(r"delivery\s+to\s+<?(\S+@\S+\.\w+)>?", re.IGNORECASE),
         re.compile(r"recipient[:\s]+<?(\S+@\S+\.\w+)>?", re.IGNORECASE),
         re.compile(r"<(\S+@\S+\.\w+)>", re.IGNORECASE),
     ]
-    own_addr = (settings.bounce_imap_user or "").lower()
     for pat in patterns:
         for m in pat.finditer(body):
             addr = m.group(1).lower().rstrip(">")
             if addr.startswith("mailto:"):
                 addr = addr[len("mailto:"):]
-            if addr and addr != own_addr:
+            addr = usable(addr)
+            if addr:
                 return addr
     return None
 
@@ -225,7 +302,15 @@ CAMPAIGN_HISTORY_PAGE_SIZE = 100
 # passes they are marked \Seen anyway, or one poison message would be
 # re-fetched and re-failed on every hourly scan forever.
 POISON_MESSAGE_MAX_ATTEMPTS = 3
-_message_failures: dict[bytes, int] = {}
+# Keyed by Message-ID (or a content hash), NOT the IMAP sequence number:
+# sequence numbers shift whenever the mailbox is expunged, so a counter keyed
+# on them could consume a different, perfectly valid bounce.
+_message_failures: dict[str, int] = {}
+_MAX_TRACKED_FAILURES = 5_000
+
+# Failures that say nothing about the message itself (ListMonk or IMAP
+# hiccups). They are retried indefinitely instead of counting as "poison".
+_TRANSIENT_ERRORS = (httpx.HTTPError, imaplib.IMAP4.error, OSError, asyncio.TimeoutError)
 
 
 async def _fetch_recent_campaigns(client: ListMonkClient) -> tuple[list[dict], bool]:
@@ -260,8 +345,9 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
 
     Campaign attribution order:
       1. ListMonk campaign headers inside the attached original message
-      2. Most recent campaign targeting any list the subscriber belongs to,
-         created on or before the bounce timestamp
+      2. Most recently sent campaign targeting any list the subscriber
+         belongs to, started on or before the bounce timestamp (drafts and
+         scheduled campaigns never qualify)
       3. Skip (can't attribute → don't create incomplete record)
     """
     if _INGEST_LOCK.locked():
@@ -301,6 +387,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
             logger.info(f"[BounceIngest] scanning {scanned} unseen bounce emails")
 
             for msg_id in ids:
+                poison_key: Optional[str] = None
                 try:
                     status, data = await asyncio.to_thread(conn.fetch, msg_id, "(RFC822)")
                     if status != "OK" or not data or not data[0]:
@@ -308,7 +395,11 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                         continue
 
                     raw = data[0][1]
+                    poison_key = "sha256:" + hashlib.sha256(raw).hexdigest()
                     msg = email.message_from_bytes(raw, policy=email.policy.default)
+                    message_id = str(msg.get("Message-ID", "") or "").strip()
+                    if message_id:
+                        poison_key = message_id
                     subject = msg.get("Subject", "")
                     body = _extract_body(msg)
 
@@ -379,9 +470,19 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                             errors += 1
                         continue
 
-                    if await subscriber_opened_campaign(
-                        client, subscriber["id"], campaign["id"],
-                    ):
+                    try:
+                        opened = await subscriber_opened_campaign(
+                            client, subscriber["id"], campaign["id"],
+                        )
+                    except Exception as e:
+                        # A ListMonk hiccup, not a bad message: leave it
+                        # UNSEEN for the next scan without counting it as
+                        # poison (three outages used to consume real bounces).
+                        logger.warning(f"opener check failed for {recipient}: {e}")
+                        errors += 1
+                        continue
+
+                    if opened:
                         skipped += 1
                         skipped_reasons["opened_campaign"] = (
                             skipped_reasons.get("opened_campaign", 0) + 1
@@ -423,11 +524,15 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                 except Exception as e:
                     logger.error(f"error processing message {msg_id}: {e}")
                     errors += 1
+                    if isinstance(e, _TRANSIENT_ERRORS) or poison_key is None:
+                        continue
                     # A permanently malformed message can never parse: after
                     # POISON_MESSAGE_MAX_ATTEMPTS failed scans, consume it so
                     # it is not re-fetched (and re-failed) on every hourly run.
-                    attempts = _message_failures.get(msg_id, 0) + 1
-                    _message_failures[msg_id] = attempts
+                    attempts = _message_failures.get(poison_key, 0) + 1
+                    _message_failures[poison_key] = attempts
+                    while len(_message_failures) > _MAX_TRACKED_FAILURES:
+                        _message_failures.pop(next(iter(_message_failures)))
                     if attempts >= POISON_MESSAGE_MAX_ATTEMPTS:
                         logger.warning(
                             f"message {msg_id} failed {attempts} times; marking "
@@ -437,7 +542,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                             await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
                         except Exception:
                             pass
-                        _message_failures.pop(msg_id, None)
+                        _message_failures.pop(poison_key, None)
 
         finally:
             try:
@@ -467,8 +572,9 @@ def _pick_campaign(
     """
     Pick the campaign this bounce belongs to:
       1. Campaign UUID/id extracted from attached original message headers
-      2. Most recent campaign targeting any of subscriber's lists
-         that was created on or before the bounce date.
+      2. Most recently *sent* campaign (by ``started_at``) targeting any of
+         the subscriber's lists, on or before the bounce date. Drafts and
+         scheduled campaigns are skipped.
     Returns the campaign dict or None.
     """
     hint = _extract_campaign_hint(msg)
@@ -479,26 +585,21 @@ def _pick_campaign(
 
     # Fall back to current time when bounce date is unavailable
     cutoff = bounce_date if bounce_date is not None else datetime.now(timezone.utc)
+    best = None
+    best_date = None
     for camp in recent_campaigns:
+        # Only campaigns that actually sent can produce a bounce.
+        if not is_sent_campaign(camp):
+            continue
         camp_list_ids = [l.get("id") for l in (camp.get("lists") or [])]
         if not camp_list_ids:
             continue
         if not any(lid in subscriber_list_ids for lid in camp_list_ids):
             continue
-        created = camp.get("created_at", "")
-        if not created:
+        camp_date = campaign_sent_at(camp)
+        if camp_date is None or camp_date > cutoff:
             continue
-        try:
-            clean_iso = created.replace("Z", "+00:00")
-            camp_date = datetime.fromisoformat(clean_iso)
-            if camp_date.tzinfo is None:
-                camp_date = camp_date.replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            try:
-                camp_date = datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError):
-                continue
-        if camp_date <= cutoff:
-            return camp
+        if best_date is None or camp_date > best_date:
+            best, best_date = camp, camp_date
 
-    return None
+    return best

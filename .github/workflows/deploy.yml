@@ -5,7 +5,29 @@ on:
     branches: [main]
 
 jobs:
+  # Deploys used to go straight to both production instances on every push,
+  # untested. The deploy job now only runs once the full suite passes.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests
+        env:
+          SESSION_SECRET: ci-only-not-a-secret
+          DATA_DIR: ${{ runner.temp }}/dashboard-data
+        run: pytest tests/ -q
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Deploy via SSH

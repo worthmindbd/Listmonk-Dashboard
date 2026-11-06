@@ -111,8 +111,12 @@ async def get_campaign_groups():
                 "campaign_id": cid,
                 "group_key": group_key,
                 "count": 0,
+                # Campaign removed in ListMonk; records are kept (audit trail).
+                "campaign_deleted": False,
             }
         groups[group_key]["count"] += 1
+        if r.get("campaign_deleted"):
+            groups[group_key]["campaign_deleted"] = True
 
     # Sort by campaign_key descending (most recent month first), then by campaign name
     sorted_groups = sorted(

@@ -25,10 +25,13 @@ SETTINGS_FILE = settings.data_path("unsubscribe_settings.json")
 # subscribers to be processed (and re-unsubscribed) again.
 PROCESSED_FILE = settings.data_path("unsubscribe_processed.json")
 
-# How long an email stays in the processed-dedup set. Without a TTL the set is
-# forever: a contact who unsubscribes, is manually re-subscribed, and later
-# replies "remove me" again would be silently ignored (and the reply marked
-# seen) — a compliance hole. After the TTL passes, a fresh request is handled.
+# How long a processed email blocks a *new IMAP reply* from the same sender.
+# Without a TTL a contact who unsubscribes, is manually re-subscribed, and
+# later replies "remove me" again would be silently ignored (and the reply
+# marked seen) — a compliance hole. After the TTL passes, a fresh reply is
+# handled. Entries are NOT deleted at expiry: the link scanner needs the
+# handled-at time indefinitely (ListMonk keeps "unsubscribed" status forever,
+# so forgetting an email made the link scanner re-log it as a new request).
 PROCESSED_TTL_DAYS = 180
 _PROCESSED_TTL_SECONDS = PROCESSED_TTL_DAYS * 24 * 60 * 60
 
@@ -134,12 +137,12 @@ async def append_log(new_records: list[dict]) -> None:
 
 
 def _load_processed_map() -> dict[str, float]:
-    """Return the processed-dedup map ``{email: handled_at_epoch}``.
+    """Return the full processed map ``{email: handled_at_epoch}``.
 
     Supports both storage formats: the original JSON list of emails and the
-    current JSON object storing a per-email timestamp (used for TTL expiry).
-    Entries older than ``PROCESSED_TTL_DAYS`` are dropped lazily so a contact
-    can unsubscribe again after re-subscribing.
+    current JSON object storing a per-email timestamp. Entries past
+    ``PROCESSED_TTL_DAYS`` are kept (see the note on the TTL above);
+    ``load_processed_emails`` applies the TTL for the IMAP scanner.
     """
     try:
         data = json.loads(PROCESSED_FILE.read_text())
@@ -149,13 +152,15 @@ def _load_processed_map() -> dict[str, float]:
     except (FileNotFoundError, IsADirectoryError, PermissionError):
         data = None
 
-    cutoff = time.time() - _PROCESSED_TTL_SECONDS
     result: dict[str, float] = {}
     if isinstance(data, dict) and isinstance(data.get("processed"), dict):
         for email, ts in data["processed"].items():
             # Legacy entries (missing timestamps) are kept; treat as "now"
             # so they get a fresh TTL window rather than instant expiry.
-            result[str(email).lower()] = float(ts) if ts else time.time()
+            try:
+                result[str(email).lower()] = float(ts) if ts else time.time()
+            except (TypeError, ValueError):
+                result[str(email).lower()] = time.time()
     elif isinstance(data, list):
         for e in data:
             if e:
@@ -173,22 +178,22 @@ def _load_processed_map() -> dict[str, float]:
                 pass
             return new_map
         return {}
-
-    expired = [e for e, ts in result.items() if ts <= cutoff]
-    if expired:
-        for e in expired:
-            logger.info("Processed entry expired after %d days: %s", PROCESSED_TTL_DAYS, e)
-            result.pop(e, None)
-        try:
-            _save_processed_map(result)
-        except OSError:
-            pass
     return result
 
 
+def load_processed_map_all() -> dict[str, float]:
+    """Every handled email with its handled-at time, ignoring the TTL.
+
+    Used by the link scanner, which compares these times against ListMonk's
+    ``subscription_updated_at`` to recognise genuinely new unsubscribes.
+    """
+    return _load_processed_map()
+
+
 def load_processed_emails() -> set[str]:
-    """Return lowercased emails of subscribers already handled by a scanner."""
-    return set(_load_processed_map())
+    """Emails handled within ``PROCESSED_TTL_DAYS`` (IMAP reply dedup)."""
+    cutoff = time.time() - _PROCESSED_TTL_SECONDS
+    return {e for e, ts in _load_processed_map().items() if ts > cutoff}
 
 
 def _save_processed_map(processed: dict[str, float]) -> None:
@@ -216,7 +221,10 @@ async def mark_processed(emails) -> None:
         now = time.time()
         for e in emails:
             if e:
-                current.setdefault(str(e).lower(), now)
+                # Overwrite, not setdefault: a re-handled email must get a
+                # fresh handled-at time, or the link scanner would see the
+                # newer ListMonk timestamp and re-process it every scan.
+                current[str(e).lower()] = now
         await asyncio.to_thread(_save_processed_map, current)
 
 

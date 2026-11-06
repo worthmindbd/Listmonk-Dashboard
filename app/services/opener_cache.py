@@ -48,6 +48,12 @@ async def get_opener_emails(
 
     The lock only guards the in-flight registry — the network fetch itself
     runs outside it, so lookups for different campaigns do not serialize.
+
+    The shared fetch is awaited through ``asyncio.shield``: awaiting a Task
+    directly cancels it when *this* awaiter is cancelled (e.g. an HTTP
+    request torn down mid-flight), which would raise ``CancelledError`` in
+    every other caller sharing it — including background loops whose
+    ``except Exception`` cannot catch it, killing the loop for good.
     """
     if not force_refresh and is_cached(campaign_id):
         return _cache[campaign_id]
@@ -58,13 +64,19 @@ async def get_opener_emails(
         if task is None:
             task = asyncio.create_task(_fetch_opener_emails(client, campaign_id))
             _inflight[campaign_id] = task
+            task.add_done_callback(lambda t, cid=campaign_id: _on_fetch_done(cid, t))
 
-    try:
-        return await task
-    finally:
-        async with _lock:
-            if _inflight.get(campaign_id) is task:
-                _inflight.pop(campaign_id, None)
+    return await asyncio.shield(task)
+
+
+def _on_fetch_done(campaign_id: int, task: asyncio.Task) -> None:
+    """Deregister a finished fetch (runs even if every awaiter was cancelled)."""
+    if _inflight.get(campaign_id) is task:
+        _inflight.pop(campaign_id, None)
+    if not task.cancelled():
+        # Mark the exception retrieved so an orphaned failure is not reported
+        # as "Task exception was never retrieved"; awaiters still receive it.
+        task.exception()
 
 
 async def get_opener_emails_for_campaigns(

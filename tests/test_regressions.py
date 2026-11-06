@@ -61,16 +61,24 @@ def test_get_stats_handles_naive_timestamps(tmp_path, monkeypatch):
 
 # ── Campaign prune / reattribution safety ────────────────────────────────────
 
-def test_prune_keeps_records_without_campaign():
-    from app.services.imap_unsubscribe import _prune_existing_records
+def test_deleted_campaign_records_are_flagged_not_dropped():
+    """The unsubscribe log is an audit trail: deleting a campaign in ListMonk
+    must flag its records, never delete them."""
+    from app.services.imap_unsubscribe import _flag_deleted_campaign_records
 
     records = [
         {"email": "a@x.com", "campaign_id": 1},
         {"email": "b@x.com", "campaign_id": 999},   # campaign deleted
         {"email": "c@x.com", "campaign_id": None},  # no matching campaign
     ]
-    pruned = _prune_existing_records(records, {1, 2})
-    assert [r["email"] for r in pruned] == ["a@x.com", "c@x.com"]
+    changed = _flag_deleted_campaign_records(records, {1, 2})
+    assert changed == 1
+    assert [r["email"] for r in records] == ["a@x.com", "b@x.com", "c@x.com"]
+    assert records[1]["campaign_deleted"] is True
+    assert "campaign_deleted" not in records[0]
+    assert "campaign_deleted" not in records[2]
+    # Idempotent: a second pass changes nothing.
+    assert _flag_deleted_campaign_records(records, {1, 2}) == 0
 
 
 def test_reattribute_does_not_remove_when_campaign_list_incomplete():

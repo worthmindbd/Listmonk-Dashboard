@@ -24,10 +24,11 @@ Listmonk-Dashboard/
 │   │   └── unsubscribes.py        # Unsubscribe log, campaign groupings, scan trigger, reset/undo
 │   └── services/                  # Core business logic & integrations
 │       ├── __init__.py
-│       ├── auto_unblock.py        # Auto-unblock engaged contacts (clickers/openers) from blocklist
+│       ├── auto_unblock.py        # Auto-unblock engaged contacts (clickers/openers) blocklisted by a bounce
 │       ├── bounce_filters.py      # Smart bounce filtering (excludes campaign openers as false positives)
 │       ├── bounce_ingest.py       # RFC 3463 bounce DSN classifier & IMAP bounce mailbox scanner
 │       ├── bounce_list.py         # Paginated bounce listing with opener exclusion & cache integration
+│       ├── campaign_attribution.py # Shared "sent campaign" rules (skip drafts/scheduled, date by started_at)
 │       ├── campaign_scheduler.py  # Timezone-aware send window scheduler (auto-pause/auto-resume)
 │       ├── csv_converter.py       # Converts arbitrary CSV to ListMonk schema (JSON attributes)
 │       ├── export_service.py      # CSV generators (sync list + async streamed)
@@ -68,8 +69,10 @@ Listmonk-Dashboard/
 │   ├── test_campaign_scheduler.py # Send-window logic
 │   ├── test_csv_converter.py      # Encoding/delimiter/column detection
 │   ├── test_review_fixes.py       # Regression tests for the full-codebase review
+│   ├── test_fixes_round2.py       # Regression tests for the second review
+│   ├── test_fixes_round3.py       # Regression tests for the third review (DSN parsing, attribution, sessions, ...)
 │   ├── conftest.py                # Resets module-level caches between tests
-│   └── test_regressions.py        # Route order, IMAP seen-marking, prune, timestamp regressions
+│   └── test_regressions.py        # Route order, IMAP seen-marking, deleted-campaign flagging, timestamp regressions
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml             # SSH automated deploy for multi-instance VPS
@@ -110,7 +113,10 @@ Listmonk-Dashboard/
 
 ### 2. Authentication & Middleware (`app/auth.py`, `app/main.py`)
 - HMAC-SHA256 signed session cookies (`SESSION_SECRET`). If `SESSION_SECRET` is omitted, auto-generates a secure 32-byte secret and persists it to `DATA_DIR/session_secret.key` (chmod 600, git- and docker-ignored).
-- 7-day session expiration.
+- 7-day session expiration. Tokens are `timestamp:nonce:signature`; the signature also covers a
+  digest of `DASHBOARD_USER`/`DASHBOARD_PASS`, so changing the login invalidates every session.
+- Logout revokes the session server-side: its nonce is stored in `DATA_DIR/revoked_sessions.json`
+  until the session would have expired (a replayed cookie is rejected after logout).
 - `AuthMiddleware` intercepts all requests:
   - Whitelisted paths: `/auth/login`, `/auth/logout`, `/favicon.ico`, `/static/*`.
   - `Strict-Transport-Security` is added only when the request arrived over TLS
@@ -127,6 +133,12 @@ Listmonk-Dashboard/
 ### 3. Bounce Ingestion & Smart Filtering
 - **Bounce Ingestion** (`app/services/bounce_ingest.py`):
   - Connects to bounce IMAP mailbox (`BOUNCE_IMAP_*`), reads unseen DSN messages.
+  - Reads the RFC 3464 `message/delivery-status` part's header blocks (`Final-Recipient`, `Status`,
+    `Diagnostic-Code`) — `get_payload(decode=True)` returns None for that part, so it must be parsed
+    as blocks. The attached original message is never used for recipient or classification (only for
+    the campaign-header hint), and `X-Original-To` is ignored (it names our own bounce mailbox).
+  - Poison-message retry counters are keyed by Message-ID/content hash (never IMAP sequence numbers),
+    and ListMonk/IMAP outages do not count as poison.
   - Classifies into **hard** vs **soft** bounces using RFC 3463 enhanced status codes (e.g. `5.1.1`, `5.1.2`, `5.2.1`) and failure patterns.
   - Attributes bounces to campaigns via message headers (`X-Listmonk-Campaign`, `List-ID`) or list membership and dates.
   - Skips recipients who opened the campaign (cannot be genuine hard bounces).
@@ -147,12 +159,26 @@ Listmonk-Dashboard/
 ### 4. Dual-Source Unsubscribe Engine
 - **IMAP Unsubscribe Monitor** (`app/services/imap_unsubscribe.py`):
   - Scans primary inbox (`IMAP_*`) every hour for **unseen** reply keywords (`"remove me"`, `"unsubscribe me"`, `"exclude me"`); blocking IMAP calls run via `asyncio.to_thread`.
+  - Keywords match whole phrases only and a preceding negation ("do not remove me") is ignored.
+  - Messages are fetched with `BODY.PEEK[]` (a plain `RFC822` fetch sets `\Seen` implicitly). Mail that is
+    not an unsubscribe request is left **unread** for the humans using the inbox; its Message-ID is cached
+    in memory so later scans skip it after a header-only fetch.
+  - Requests whose topmost `Authentication-Results` shows DMARC fail (or DKIM+SPF fail) are ignored and
+    left unread; the sender is parsed with `email.utils.parseaddr`, never from the display name.
+  - HTML-only replies are converted to text (quoted history removed) instead of being skipped.
   - Quote stripping (`_extract_reply_only`): ignores quoted history/template footers to eliminate false positives.
   - List-aware campaign matching: attributes replies to the latest campaign that targeted the subscriber's actual lists.
   - Actions: unenrolls subscriber from all lists, conditionally blocklists (if enabled in settings), logs to `unsubscribe_log.json`.
   - Processed messages are marked `\Seen` after their records are persisted; handled emails are also stored in `unsubscribe_processed.json`, so clearing/deleting log records does not cause re-processing.
+  - `unsubscribe_processed.json` keeps every handled-at time. `load_processed_emails()` applies the 180-day
+    TTL (so a later IMAP reply is honoured); `load_processed_map_all()` ignores it for the link scanner.
+  - Records for campaigns deleted in ListMonk are flagged `campaign_deleted: true`, never removed — the log
+    is the unsubscribe audit trail.
 - **Link Unsubscribe Scanner** (`app/services/link_unsubscribe.py`):
   - Polls ListMonk lists for subscribers with `unsubscribed` status.
+  - A subscriber already handled is only processed again when a list's `subscription_updated_at` is newer
+    than the handled-at time (re-subscribed, then unsubscribed again). ListMonk keeps `unsubscribed`
+    status forever, so "currently unsubscribed" alone must never trigger re-processing.
   - Cascades unsubscription across all lists and applies optional blocklist.
   - Logs records with `source: "link"`; serialized with a module lock so manual and background scans cannot double-process.
 - **Undo / Reset** (`POST /api/unsubscribes/reset`):
@@ -162,7 +188,7 @@ Listmonk-Dashboard/
 All background tasks run as managed `asyncio.create_task` loops in `app/main.py`:
 | Task Loop | Interval | Purpose |
 |-----------|----------|---------|
-| `auto_unblock_loop` | 6 hours | Finds blocklisted clickers/openers, re-enables them, deletes false bounce records |
+| `auto_unblock_loop` | 6 hours | Finds clickers/openers blocklisted *by a bounce*, re-enables them, deletes false bounce records. Never touches subscribers without a hard/soft bounce, complainers, or anyone in the unsubscribe records |
 | `scheduler_loop` | 60 seconds | Enforces daily send windows, auto-pauses/resumes campaigns |
 | `imap_scan_loop` | 1 hour | Scans IMAP inbox for replies + polls ListMonk for link unsubscribes |
 | `bounce_ingest_loop` | 1 hour | Scans bounce mailbox for unseen DSNs, classifies & records bounces |
@@ -171,7 +197,8 @@ All background tasks run as managed `asyncio.create_task` loops in `app/main.py`
 ### 6. CSV Converter (`app/services/csv_converter.py`)
 - Detects column headers and sample data from uploaded CSVs.
 - Maps custom columns to ListMonk's required structure: `email`, `name`, `attributes` (serialized as JSON).
-- Supports direct import into ListMonk with list selection and subscription mode (`subscribe`, `unsubscribed`).
+- Supports direct import into ListMonk with list selection and import mode (`subscribe`, `blocklist` — the only modes ListMonk accepts).
+- `overwrite` is opt-in (default off): when on, ListMonk replaces existing subscribers' name and entire attribute set.
 
 ### 7. Persistent Runtime State (`DATA_DIR`)
 - `app/config.py` provides `settings.data_path(filename)` to store mutable JSON state files (`schedule.json`, `unsubscribe_log.json`, `unsubscribe_settings.json`, `unsubscribe_processed.json`).
@@ -269,3 +296,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 9. **Multi-Instance Support** — respect `DATA_DIR` so changes remain compatible with multi-instance deployments (`docker-compose.instance2.yml`).
 10. **Frontend error contract** — `API.request` toasts server errors once and marks the rejection `err.handled = true`. Callers must not toast again; wrap mutating handlers in `try/catch` or the promise rejection is unhandled.
 11. **Module-level caches** — any service cache in a module global needs an invalidation hook and must be reset by `tests/conftest.py`, or tests leak state into each other.
+12. **Campaign attribution** — use `is_sent_campaign` / `campaign_sent_at` from `campaign_attribution.py`; never attribute an unsubscribe or bounce to a draft/scheduled campaign or date it by `created_at` alone.
+13. **CSV exports** — go through `export_service` so text cells starting with `= + - @` are neutralised (CSV formula injection); subscriber names come from public forms.
+14. **Upstream auth errors** — a ListMonk `401` is reported as `502` (bad dashboard credentials), never passed through: the frontend treats `401` as "session expired" and would redirect-loop.
+15. **Tests never run the app lifespan** — don't use `with TestClient(app)`; it starts the real background loops against whatever the local `.env` points at.

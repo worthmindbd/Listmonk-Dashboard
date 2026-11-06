@@ -10,9 +10,12 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from app.services.campaign_attribution import (
+    campaign_sent_at, is_sent_campaign, parse_listmonk_dt,
+)
 from app.services.listmonk_client import ListMonkClient
 from app.services.unsubscribe_log import (
-    append_log, load_settings, load_processed_emails, mark_processed,
+    append_log, load_settings, load_processed_map_all, mark_processed,
     scanner_lock,
 )
 
@@ -24,6 +27,10 @@ CAMPAIGN_PAGE_SIZE = 100
 MAX_CAMPAIGN_PAGES = 20  # Safety cap: 2000 campaigns
 CAMPAIGN_HISTORY_TTL = 900  # 15 minutes; campaign creation is rare
 
+# Clock-skew allowance when comparing ListMonk's subscription_updated_at with
+# the dashboard's own handled-at timestamp (the two can run on different hosts).
+RESUBSCRIBE_SLACK_SECONDS = 5 * 60
+
 _link_scan_lock = asyncio.Lock()
 
 # Full campaign history (newest first) used for attribution, plus its load time.
@@ -33,8 +40,9 @@ _campaign_history_at: float = 0.0
 
 def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
     """
-    Pick the most recent campaign (created on or before now) that targets any
-    of list_ids. `campaigns` must be pre-sorted DESC by created_at.
+    Pick the most recently *sent* campaign (started on or before now) that
+    targets any of list_ids. Drafts and scheduled campaigns are ignored — a
+    campaign nobody has received yet cannot have caused an unsubscribe.
     Returns {campaign_id, campaign_name, campaign_key, matched_list_id}.
     matched_list_id is one of list_ids that the chosen campaign targets — used
     by the caller to set a representative list_id on the log record. When the
@@ -44,7 +52,11 @@ def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
     """
     now = datetime.now(timezone.utc)
     fallback_list_id = min(list_ids) if list_ids else None
+    best = None
+    best_date = None
     for camp in campaigns:
+        if not is_sent_campaign(camp):
+            continue
         camp_list_ids = [l.get("id") for l in (camp.get("lists") or [])]
         # Intersect campaign's target lists with subscriber's unsubscribed lists.
         # If the API omits lists, fall back to time-based matching only.
@@ -59,33 +71,49 @@ def _pick_campaign_for_list_ids(campaigns: list, list_ids: set[int]) -> dict:
             if matched is None:
                 continue
 
-        created = camp.get("created_at", "")
-        if not created:
+        camp_date = campaign_sent_at(camp)
+        if camp_date is None or camp_date > now:
             continue
-        try:
-            clean_iso = created.replace("Z", "+00:00")
-            camp_date = datetime.fromisoformat(clean_iso)
-            if camp_date.tzinfo is None:
-                camp_date = camp_date.replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            try:
-                camp_date = datetime.fromisoformat(created[:10]).replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError):
-                continue
-        if camp_date <= now:
-            return {
+        # Pick by send date rather than list order: creation order and send
+        # order differ whenever an older draft is sent after a newer one.
+        if best_date is None or camp_date > best_date:
+            best_date = camp_date
+            best = {
                 "campaign_id": camp.get("id"),
                 "campaign_name": camp.get("name", ""),
                 "campaign_key": f"{camp_date.year}-{camp_date.month:02d}",
                 "matched_list_id": matched if matched is not None else fallback_list_id,
             }
 
+    if best is not None:
+        return best
     return {
         "campaign_id": None,
         "campaign_name": "No matching campaign",
         "campaign_key": _current_campaign_key(),
         "matched_list_id": fallback_list_id,
     }
+
+
+def _unsubscribed_again_since(sub: dict, unsub_list_ids: set, handled_at: float) -> bool:
+    """True when the subscriber unsubscribed from a list *after* we handled them.
+
+    Unsubscribed subscribers keep the ``unsubscribed`` status in ListMonk
+    forever, so "currently unsubscribed" alone cannot tell a new request from
+    one we processed long ago. ListMonk's per-list ``subscription_updated_at``
+    can: it only moves past our handled-at time when the contact was
+    re-subscribed and then unsubscribed again. Without that field we
+    conservatively treat the subscriber as already handled.
+    """
+    for lst in sub.get("lists") or []:
+        if not isinstance(lst, dict) or lst.get("id") not in unsub_list_ids:
+            continue
+        if (lst.get("subscription_status") or "unsubscribed") != "unsubscribed":
+            continue
+        updated = parse_listmonk_dt(lst.get("subscription_updated_at"))
+        if updated and updated.timestamp() > handled_at + RESUBSCRIBE_SLACK_SECONDS:
+            return True
+    return False
 
 
 def _current_campaign_key() -> str:
@@ -183,7 +211,11 @@ async def _scan_link_unsubscribes_impl(client: ListMonkClient) -> dict:
     scanned_lists = 0
     errors = 0
 
-    processed_emails = load_processed_emails()
+    # Full handled-at map, including entries past the IMAP re-request TTL:
+    # the link scanner decides "new request?" from ListMonk's own timestamps
+    # (see _unsubscribed_again_since), so an expired entry must not make it
+    # re-log and re-attribute everyone who unsubscribed long ago.
+    processed_map = load_processed_map_all()
 
     scan_settings = load_settings()
     blocklist_enabled = scan_settings.get("blocklist_enabled", False)
@@ -259,7 +291,10 @@ async def _scan_link_unsubscribes_impl(client: ListMonkClient) -> dict:
         sub = entry["sub"]
         unsub_list_ids = entry["unsub_list_ids"]
         email = (sub.get("email") or "").lower()
-        if not email or email in processed_emails:
+        if not email:
+            continue
+        handled_at = processed_map.get(email)
+        if handled_at is not None and not _unsubscribed_again_since(sub, unsub_list_ids, handled_at):
             continue
 
         new_found += 1
@@ -308,7 +343,7 @@ async def _scan_link_unsubscribes_impl(client: ListMonkClient) -> dict:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         new_records.append(record)
-        processed_emails.add(email)
+        processed_map[email] = time.time()
         processed += 1
         action = "Unsubscribed + Blocklisted" if blocklist_enabled else "Unsubscribed"
         logger.info(f"[LINK] {action}: {email} (list: {list_name})")

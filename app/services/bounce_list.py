@@ -95,7 +95,13 @@ async def fetch_filtered_bounces_page(
     lm_page = 1
 
     lm_total = 0
-    raw_results: list[dict] = []
+    raw_seen = 0
+    # Set only when the walk provably consumed every ListMonk record. Deriving
+    # it after the loop from lm_page was wrong: lm_page is already advanced
+    # past the last fetched page whenever the loop stops because enough rows
+    # were collected, so the "end" looked reached one page early and the
+    # reported total dropped to len(collected) — hiding the final page(s).
+    reached_end = False
     while len(collected) < needed and lm_page <= MAX_LM_PAGES:
         res = await client.get_bounces(
             lm_page, LM_FETCH_SIZE, campaign_id, source, bounce_type,
@@ -104,7 +110,9 @@ async def fetch_filtered_bounces_page(
         lm_total = data.get("total", 0)
         raw_results = data.get("results", [])
         if not raw_results:
+            reached_end = True
             break
+        raw_seen += len(raw_results)
 
         # If bounce_type is specified (e.g. "hard" or "soft"), filter by it; otherwise keep all
         if bounce_type and bounce_type.lower() != "all":
@@ -125,7 +133,10 @@ async def fetch_filtered_bounces_page(
                 else:
                     collected.extend(other_bounces)
 
-        if lm_page * LM_FETCH_SIZE >= lm_total:
+        # Count rows actually received rather than page * size, so a server
+        # that caps per_page below LM_FETCH_SIZE cannot end the walk early.
+        if raw_seen >= lm_total:
+            reached_end = True
             break
         lm_page += 1
 
@@ -135,7 +146,6 @@ async def fetch_filtered_bounces_page(
     # Total should match what the user sees: hard-bounce cache is authoritative
     # for hard bounces (already excludes openers); otherwise use cached total or
     # ListMonk's total (or actual collected count if we finished all pages).
-    reached_end = (lm_page * LM_FETCH_SIZE >= lm_total) or (len(collected) < needed and not raw_results)
     typed_filter = bool(bounce_type) and (bounce_type or "").lower() != "all"
     if reached_end:
         total = len(collected)

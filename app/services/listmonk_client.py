@@ -65,22 +65,27 @@ class ListMonkClient:
         once ``total`` is satisfied, or after ``max_pages`` requests.
         """
         page = 1
+        seen = 0
         while True:
             result = await fetch_fn(page=page, per_page=per_page, **kwargs)
             data = result.get("data", {})
             results = data.get("results", [])
             if not results:
                 return
+            seen += len(results)
             for item in results:
                 yield item
 
+            # Compare against rows actually received, not page * per_page:
+            # if the server caps per_page lower than requested, the latter
+            # claims the total is reached while records remain unread.
             total = data.get("total")
-            if isinstance(total, (int, float)) and page * per_page >= total:
+            if isinstance(total, (int, float)) and seen >= total:
                 return
             if max_pages and page >= max_pages:
                 logger.warning(
                     "Pagination stopped at %d pages (%d items collected, total=%s)",
-                    max_pages, page * per_page, total,
+                    max_pages, seen, total,
                 )
                 return
             page += 1

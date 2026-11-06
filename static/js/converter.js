@@ -296,6 +296,15 @@ const Converter = {
                         <option value="blocklist">Blocklist</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                        <input type="checkbox" id="importOverwrite">
+                        Overwrite name &amp; attributes of existing subscribers
+                    </label>
+                    <p style="font-size:0.8rem;color:var(--text-muted);margin-top:4px">
+                        When on, existing subscribers' attributes are <strong>replaced</strong> by this file's columns (attributes not in the file are lost).
+                    </p>
+                </div>
                 <button class="btn btn-success" onclick="Converter.executeImport()">Start Import</button>
             </div>
         `;
@@ -316,6 +325,7 @@ const Converter = {
         formData.append('attribute_columns', JSON.stringify(this._mapping.attrCols));
         formData.append('list_ids', JSON.stringify(selectedLists));
         formData.append('mode', mode);
+        formData.append('overwrite', document.getElementById('importOverwrite')?.checked ? 'true' : 'false');
 
         try {
             const result = await API.upload('/api/converter/convert-and-import', formData);

@@ -353,11 +353,16 @@ const Campaigns = {
     },
 
     async changeStatus(id, status) {
-        const action = status === 'running' ? 'start' : status;
+        const verbs = {
+            running: ['start', 'started'],
+            paused: ['pause', 'paused'],
+            cancelled: ['cancel', 'cancelled'],
+        };
+        const [action, done] = verbs[status] || [status, `set to ${status}`];
         if (await App.confirm('Change Status', `Are you sure you want to ${action} this campaign?`)) {
             try {
                 await API.put(`/api/campaigns/${id}/status`, { status });
-                App.toast(`Campaign ${action}ed`, 'success');
+                App.toast(`Campaign ${done}`, 'success');
                 this.render();
             } catch {
                 // API.request already surfaced the server message.

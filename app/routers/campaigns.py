@@ -18,9 +18,10 @@ router = APIRouter()
 MAX_PAGE = 100
 MAX_PER_PAGE = 500
 
-# Export streams pages lazily; cap the walk so a misbehaving API cannot hold
-# the connection open indefinitely. 100 pages x 100 rows = 10k campaigns.
-EXPORT_MAX_PAGES = 100
+# Export streams pages lazily; the cap only stops an API that never stops
+# returning rows, and sits well above any real history (1000 x 100 = 100k
+# campaigns) so exports are never silently truncated.
+EXPORT_MAX_PAGES = 1000
 
 # Short-lived cache for the all-campaigns summary (paginates the entire
 # campaign history, so avoid repeating it on every dashboard/analytics load).

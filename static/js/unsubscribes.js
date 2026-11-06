@@ -195,6 +195,7 @@ const Unsubscribes = {
                             <div class="unsub-campaign-info">
                                 <span class="badge badge-primary" style="font-size:0.8rem;padding:4px 10px;margin-right:8px">${readableDate}</span>
                                 <strong>${cleanName}</strong>
+                                ${g.campaign_deleted ? '<span class="badge badge-warning" style="margin-left:8px" title="This campaign was deleted in ListMonk; its unsubscribe records are kept as an audit trail">Campaign deleted</span>' : ''}
                             </div>
                             <div class="unsub-campaign-meta">
                                 <span class="badge badge-default" style="font-size:0.8rem;text-transform:uppercase">${g.count} unsubscribe${g.count !== 1 ? 's' : ''}</span>

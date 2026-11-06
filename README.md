@@ -46,13 +46,13 @@ ListMonk requires a specific CSV format (`email`, `name`, `attributes` as JSON).
 
 ### Settings & Automation
 - **Campaign Scheduler** — Enforces daily sending windows (e.g., 8:00 AM – 8:00 PM EST) and allowed days (Mon–Fri, weekends). Running campaigns outside the window auto-pause, and auto-paused campaigns automatically resume when the window opens.
-- **Auto-Unblock Protection** — Identifies engaged subscribers (who clicked links or opened campaigns) who were accidentally blocklisted by false bounces, re-enables them, and purges their bounce records. Runs every 6 hours or manually.
+- **Auto-Unblock Protection** — Identifies engaged subscribers (who clicked links or opened campaigns) who were accidentally blocklisted by false bounces, re-enables them, and purges their bounce records. Runs every 6 hours or manually. Deliberate blocklists are never reversed: subscribers with no bounce record (e.g. blocklisted by hand), spam complainers, and anyone in the unsubscribe log stay blocklisted.
 - **Persistent Data Store** — Runtime configuration and logs persist to `DATA_DIR` (backed by a named volume in Docker).
 
 ### Security
 - HMAC-SHA256 session-based cookie authentication with automatic secret generation.
 - All API endpoints and pages protected by authentication middleware.
-- 7-day session lifetime with clean login/logout flow.
+- 7-day session lifetime with clean login/logout flow. Logout revokes the session server-side, and changing `DASHBOARD_USER`/`DASHBOARD_PASS` invalidates every existing session.
 
 ---
 
@@ -195,7 +195,7 @@ The dashboard runs five background loops started during application lifecycle:
 | **Hard Bounce Cache** | On startup + every 5 min | Computes true hard bounce counts per campaign, excluding openers |
 | **IMAP & Link Unsubscribe Scan** | Every 1 hour | Scans inbox for reply keywords and polls ListMonk for link unsubscribes |
 | **Bounce Ingestion** | Every 1 hour | Ingests and classifies unseen DSNs from the bounce IMAP mailbox |
-| **Auto-Unblock Protection** | Every 6 hours | Scans for engaged blocklisted contacts, re-enables them, and purges bounce records |
+| **Auto-Unblock Protection** | Every 6 hours | Scans for engaged contacts blocklisted by a bounce, re-enables them, and purges bounce records |
 
 ---
 
@@ -219,7 +219,8 @@ ListMonk-Dashboard/
       listmonk_client.py       # Async HTTP client for ListMonk REST API (with paginate_all helper)
       csv_converter.py         # CSV converter transforming arbitrary columns to ListMonk schema
       export_service.py        # Memory-efficient streaming CSV generator
-      auto_unblock.py          # Auto-unblock engaged contacts (clickers/openers) from blocklist
+      auto_unblock.py          # Auto-unblock engaged contacts (clickers/openers) blocklisted by a bounce
+      campaign_attribution.py  # Shared "sent campaign" rules for unsubscribe/bounce attribution
       campaign_scheduler.py    # Timezone-aware send window scheduler
       bounce_ingest.py         # RFC 3463 DSN classifier & IMAP bounce mailbox scanner
       bounce_filters.py        # Opener false-positive bounce filtering
@@ -255,7 +256,7 @@ ListMonk-Dashboard/
     test_bounce_classify.py    # RFC 3463 bounce classifier tests
     test_bounce_filters.py     # Opener exclusion & false positive filter tests
     test_link_unsubscribe.py   # Link unsubscribe scanner & dedup tests
-    test_regressions.py        # Route order, IMAP seen-marking, prune, timestamp regressions
+    test_regressions.py        # Route order, IMAP seen-marking, deleted-campaign flagging, timestamp regressions
   .github/workflows/
     deploy.yml                 # Automated SSH deploy on push to main
   docker-compose.yml           # Primary instance compose definition
@@ -279,7 +280,7 @@ Once running, visit **http://localhost:8000/docs** for the interactive Swagger U
 | Category | Endpoint | Method | Description |
 |----------|----------|--------|-------------|
 | **Auth** | `/auth/login` | GET / POST | Login page / authenticate session |
-| | `/auth/logout` | GET | End session & redirect |
+| | `/auth/logout` | POST | End (and revoke) session & redirect |
 | **Subscribers** | `GET /api/subscribers` | GET | List subscribers with search/filter |
 | | `GET /api/subscribers/export-all` | GET | Export all subscribers as CSV |
 | | `GET /api/subscribers/import/status` | GET | Check subscriber import status |

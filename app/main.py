@@ -17,7 +17,6 @@ from app.services.listmonk_client import listmonk
 from app.services.auto_unblock import (
     find_blocklisted_engaged,
     unblock_subscribers,
-    QUERY_BLOCKLISTED_ENGAGED,
 )
 from app.services.campaign_scheduler import (
     load_schedule, save_schedule, is_within_send_window,
@@ -198,14 +197,26 @@ async def httpx_error_handler(request: Request, exc: httpx.HTTPStatusError):
     # str(exc) embeds ListMonk's internal base URL and full query string
     # (including user-typed search expressions), so forward only ListMonk's
     # sanitised JSON error body when it is parseable.
-    detail = f"ListMonk API error ({exc.response.status_code})"
+    upstream_status = exc.response.status_code
+    detail = f"ListMonk API error ({upstream_status})"
     try:
         body = exc.response.json()
         if isinstance(body, dict) and body.get("message"):
             detail = f"ListMonk API error: {body['message']}"
     except Exception:
         pass
-    return JSONResponse(status_code=exc.response.status_code, content={"detail": detail})
+    # ListMonk's 401 means the DASHBOARD's API credentials were rejected, not
+    # that the browser session expired. Passing it through made api.js
+    # redirect to /auth/login, which (session still valid) bounced straight
+    # back to "/" — an endless redirect loop. Report it as a bad gateway.
+    if upstream_status == 401:
+        logger.error(f"ListMonk rejected the API credentials ({request.url.path})")
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "ListMonk rejected the dashboard's API credentials. "
+                               "Check LISTMONK_USER and LISTMONK_API_KEY."},
+        )
+    return JSONResponse(status_code=upstream_status, content={"detail": detail})
 
 
 @app.exception_handler(httpx.RequestError)
@@ -312,8 +323,9 @@ async def auto_unblock_status():
     # scheduler with Promise.all, so raising here would blank the whole page
     # when only this readout is unavailable. The client renders `error`.
     try:
-        result = await listmonk.get_subscribers(1, 1, QUERY_BLOCKLISTED_ENGAGED)
-        total = result.get("data", {}).get("total", 0)
+        # Counted after the same suppression filtering the unblock run applies,
+        # so the readout matches what "Run Auto-Unblock Now" would touch.
+        total = len(await find_blocklisted_engaged(listmonk))
         return {
             "blocklisted_engaged": total,
             "blocklisted_clickers": total,
@@ -416,6 +428,16 @@ async def update_schedule(data: dict):
                     "end_hour", "end_minute", "days"]:
             if key in data:
                 schedule[key] = data[key]
+        # Checked on the merged schedule, since a PUT may change only one end.
+        # An empty window (start == end, e.g. 00:00-00:00 meant as "all day")
+        # is never "inside", so every campaign would be paused indefinitely.
+        if (schedule["start_hour"], schedule["start_minute"]) == (
+            schedule["end_hour"], schedule["end_minute"]
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Send window start and end must differ (to send around the clock, disable the scheduler).",
+            )
         try:
             save_schedule(schedule)
         except OSError as e:

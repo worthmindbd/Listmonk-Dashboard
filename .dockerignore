@@ -9,6 +9,7 @@ __pycache__/
 .agent/
 schedule.json
 session_secret.key
+revoked_sessions.json
 *.md
 unsubscribe_log.json*
 unsubscribe_settings.json

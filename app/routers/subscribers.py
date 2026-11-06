@@ -10,9 +10,12 @@ router = APIRouter()
 MAX_PAGE = 100
 MAX_PER_PAGE = 200
 
-# Export streams pages lazily; cap the walk so a misbehaving API cannot hold
-# the connection open indefinitely. 100 pages x 100 rows = 10k subscribers.
-EXPORT_MAX_PAGES = 100
+# Export streams pages lazily, so memory stays at one page however large the
+# list is. The page cap only guards against an API that never stops returning
+# rows; it must sit far above any real list — the old 100 x 100 cap silently
+# truncated every export at 10k subscribers. 2000 pages x 500 = 1M rows.
+EXPORT_PAGE_SIZE = 500
+EXPORT_MAX_PAGES = 2000
 
 
 @router.get("")
@@ -33,7 +36,7 @@ async def export_all_subscribers(query: str = "", list_id: Optional[int] = None)
 
     async def rows():
         async for sub in listmonk.iter_pages(
-            listmonk.get_subscribers, per_page=100,
+            listmonk.get_subscribers, per_page=EXPORT_PAGE_SIZE,
             max_pages=EXPORT_MAX_PAGES,
             query=query, list_id=list_id,
         ):

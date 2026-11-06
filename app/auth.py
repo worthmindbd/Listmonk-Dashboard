@@ -5,9 +5,11 @@ Uses a username/password from .env and signed cookies.
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 import secrets
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -161,6 +163,107 @@ def _sign(value: str) -> str:
     return hmac.new(_secret_key.encode(), value.encode(), hashlib.sha256).hexdigest()
 
 
+def _credentials_fingerprint() -> str:
+    """Digest of the configured login, mixed into every session signature.
+
+    Changing DASHBOARD_USER or DASHBOARD_PASS therefore invalidates every
+    existing session — previously a cookie stolen before a password rotation
+    stayed valid for its full 7 days.
+    """
+    raw = f"{os.getenv('DASHBOARD_USER', '')}\0{os.getenv('DASHBOARD_PASS', '')}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _session_payload(timestamp: str, nonce: str) -> str:
+    return f"{timestamp}:{nonce}:{_credentials_fingerprint()}"
+
+
+# ── Server-side revocation ────────────────────────────────────────────────────
+# Cookies are stateless, so logout used to only delete the browser's copy; the
+# token itself stayed valid for 7 days. Each session now carries a random
+# nonce, and logout records it here (persisted in DATA_DIR so a restart does
+# not resurrect it). Entries expire with the session they revoke.
+
+REVOKED_FILE_NAME = "revoked_sessions.json"
+_revoked: dict[str, float] = {}       # nonce -> session expiry (epoch)
+_revoked_loaded_mtime: Optional[float] = None
+
+
+def _revoked_path() -> Path:
+    return settings.data_path(REVOKED_FILE_NAME)
+
+
+def invalidate_revocation_cache() -> None:
+    """Drop the in-memory revocation set (tests; AGENTS.md rule 11)."""
+    global _revoked_loaded_mtime
+    _revoked.clear()
+    _revoked_loaded_mtime = None
+
+
+def _refresh_revoked() -> None:
+    """(Re)load the revocation file when it changed since the last read."""
+    global _revoked_loaded_mtime
+    path = _revoked_path()
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return
+    if _revoked_loaded_mtime == mtime:
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.warning("Could not read %s; keeping in-memory revocations", path)
+        return
+    now = time.time()
+    if isinstance(data, dict):
+        for nonce, exp in data.items():
+            try:
+                if float(exp) > now:
+                    _revoked[str(nonce)] = float(exp)
+            except (TypeError, ValueError):
+                continue
+    _revoked_loaded_mtime = mtime
+
+
+def _revoke(nonce: str, expires_at: float) -> None:
+    global _revoked_loaded_mtime
+    _refresh_revoked()
+    now = time.time()
+    _revoked[nonce] = expires_at
+    for n in [n for n, exp in _revoked.items() if exp <= now]:
+        _revoked.pop(n, None)
+    path = _revoked_path()
+    try:
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix="revoked_", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(_revoked, f)
+        os.replace(tmp, path)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        _revoked_loaded_mtime = path.stat().st_mtime
+    except OSError:
+        # Still revoked for this process's lifetime; just not across restarts.
+        logger.exception("Could not persist session revocation to %s", path)
+
+
+def _parse_token(token: Optional[str]) -> Optional[tuple[str, str, int]]:
+    """Validate a cookie token; return (nonce, timestamp, created) or None."""
+    if not token or token.count(":") != 2:
+        # Covers pre-revocation 2-part tokens: users simply log in once more.
+        return None
+    timestamp, nonce, signature = token.split(":")
+    if not nonce or not hmac.compare_digest(signature, _sign(_session_payload(timestamp, nonce))):
+        return None
+    try:
+        created = int(timestamp)
+    except ValueError:
+        return None
+    return nonce, timestamp, created
+
+
 def _is_secure_cookie(request: Optional[Request] = None) -> bool:
     cookie_secure_env = os.getenv("COOKIE_SECURE", "").strip().lower()
     if cookie_secure_env in ("1", "true", "yes"):
@@ -179,8 +282,9 @@ def _is_secure_cookie(request: Optional[Request] = None) -> bool:
 def create_session(response: Response, request: Optional[Request] = None):
     """Set a signed session cookie on the response."""
     timestamp = str(int(time.time()))
-    signature = _sign(timestamp)
-    token = f"{timestamp}:{signature}"
+    nonce = secrets.token_urlsafe(16)
+    signature = _sign(_session_payload(timestamp, nonce))
+    token = f"{timestamp}:{nonce}:{signature}"
     is_secure = _is_secure_cookie(request)
     response.set_cookie(
         COOKIE_NAME, token,
@@ -194,29 +298,30 @@ def create_session(response: Response, request: Optional[Request] = None):
 
 def verify_session(request: Request) -> bool:
     """Check if the request has a valid session cookie."""
-    token = request.cookies.get(COOKIE_NAME)
-    if not token or ":" not in token:
+    parsed = _parse_token(request.cookies.get(COOKIE_NAME))
+    if parsed is None:
         return False
-
-    timestamp, signature = token.split(":", 1)
-
-    # Verify signature
-    if not hmac.compare_digest(signature, _sign(timestamp)):
-        return False
+    nonce, _timestamp, created = parsed
 
     # Check expiry
-    try:
-        created = int(timestamp)
-        if time.time() - created > SESSION_MAX_AGE:
-            return False
-    except ValueError:
+    if time.time() - created > SESSION_MAX_AGE:
+        return False
+
+    # Check server-side revocation (logout)
+    _refresh_revoked()
+    if nonce in _revoked:
         return False
 
     return True
 
 
 def clear_session(response: Response, request: Optional[Request] = None):
-    """Remove the session cookie."""
+    """Revoke the current session server-side and remove the cookie."""
+    if request is not None:
+        parsed = _parse_token(request.cookies.get(COOKIE_NAME))
+        if parsed is not None:
+            nonce, _timestamp, created = parsed
+            _revoke(nonce, created + SESSION_MAX_AGE)
     is_secure = _is_secure_cookie(request)
     response.delete_cookie(
         COOKIE_NAME,

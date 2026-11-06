@@ -288,11 +288,12 @@ const Settings = {
                 <div style="font-size:0.85rem;color:var(--text-secondary);line-height:1.8">
                     <p><strong>Every ${interval} hours</strong>, the system automatically:</p>
                     <ul style="padding-left:20px;margin:8px 0">
-                        <li>Finds subscribers who <strong>opened or clicked</strong> any campaign but are <strong>blocklisted</strong></li>
+                        <li>Finds subscribers who <strong>opened or clicked</strong> any campaign but were <strong>blocklisted because of a bounce</strong></li>
                         <li><strong>Re-enables</strong> them (removes blocklist status)</li>
                         <li><strong>Deletes</strong> their bounce records (since they clearly received the email)</li>
                     </ul>
                     <p>This protects real subscribers who get falsely bounced — e.g. security scanners that pre-scan links, or delayed bounce DSNs after the recipient already opened the email.</p>
+                    <p>Deliberate blocklists are never reversed: subscribers with no bounce record (e.g. blocklisted by hand), spam complainers, and anyone in the unsubscribe log stay blocklisted.</p>
                 </div>
             </div>
         `;

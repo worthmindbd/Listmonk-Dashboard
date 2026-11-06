@@ -11,8 +11,10 @@ router = APIRouter()
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
 # ListMonk's importer accepts exactly these modes; anything else either
-# produces a cryptic upstream 4xx or silently different behaviour.
-VALID_IMPORT_MODES = {"subscribe", "subscribe-existing", "unsubscribed"}
+# produces a cryptic upstream 4xx or silently different behaviour. (The list
+# previously held "subscribe-existing"/"unsubscribed", which ListMonk does not
+# accept, while rejecting the UI's "blocklist" option outright.)
+VALID_IMPORT_MODES = {"subscribe", "blocklist"}
 
 
 def _parse_attribute_columns(attribute_columns: Optional[str]) -> list[str]:
@@ -118,8 +120,14 @@ async def convert_and_import(
     attribute_columns: Optional[str] = Form(None),
     list_ids: str = Form(...),
     mode: str = Form("subscribe"),
+    overwrite: bool = Form(False),
 ):
-    """Convert CSV to ListMonk format and immediately import to ListMonk."""
+    """Convert CSV to ListMonk format and immediately import to ListMonk.
+
+    ``overwrite`` is opt-in: when true ListMonk REPLACES the name and the whole
+    attribute set of subscribers that already exist, so a CSV carrying fewer
+    columns silently wipes their other attributes. It used to be hard-coded on.
+    """
     content = await _read_upload(file)
     attrs = _parse_attribute_columns(attribute_columns)
     parsed_list_ids = _parse_list_ids(list_ids)
@@ -134,7 +142,7 @@ async def convert_and_import(
         "mode": import_mode,
         "delim": ",",
         "lists": parsed_list_ids,
-        "overwrite": True,
+        "overwrite": overwrite,
     }
     import_result = await listmonk.import_subscribers(
         result["csv_content"].encode("utf-8"),

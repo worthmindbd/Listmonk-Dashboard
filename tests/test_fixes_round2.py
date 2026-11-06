@@ -178,8 +178,9 @@ def test_processed_ttl_expires_old_entries(tmp_path, monkeypatch):
     emails = load_processed_emails()
     assert "fresh@x.com" in emails
     assert "stale@x.com" not in emails, "expired entry must allow a new unsubscribe"
-    # Expiry is persisted so the entry does not resurrect on next load.
-    assert "stale@x.com" not in _load_processed_map()
+    # The entry itself is retained (with its handled-at time) for the link
+    # scanner, which must not re-log long-ago unsubscribes once it expires.
+    assert "stale@x.com" in _load_processed_map()
 
 
 def test_processed_legacy_list_format_still_loads(tmp_path, monkeypatch):

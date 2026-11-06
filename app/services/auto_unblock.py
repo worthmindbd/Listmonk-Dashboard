@@ -1,9 +1,19 @@
 """
 Auto-unblock service: Finds subscribers who clicked links or opened campaigns
-but are currently blocklisted, and re-enables them + deletes their bounce records.
+but were blocklisted BY A BOUNCE, and re-enables them + deletes their bounce
+records.
 
-Logic: If a subscriber clicked or opened, they are a real engaged user.
-Being blocklisted (usually from a bounce) is a false positive.
+Logic: If a subscriber clicked or opened, their address demonstrably works,
+so a bounce-driven blocklist is a false positive.
+
+Deliberate blocklists are never reversed. Engagement alone used to qualify,
+which re-enabled (every 6 hours) people who were blocklisted because they
+unsubscribed — almost everyone who replies "remove me" opened the email —
+people an admin blocklisted by hand, and spam complainers (you have to open
+an email to report it). Candidates must now:
+  * have at least one hard/soft bounce record (the blocklist came from a bounce),
+  * have no complaint bounce, and
+  * not appear in the dashboard's unsubscribe records.
 """
 
 import asyncio
@@ -12,13 +22,20 @@ from datetime import datetime, timezone
 from app.services.listmonk_client import ListMonkClient, listmonk as listmonk_singleton
 from app.config import settings
 from app.services.task_utils import spawn
+from app.services.unsubscribe_log import load_log, load_processed_map_all
 
 logger = logging.getLogger("auto_unblock")
 
 QUERY_BLOCKLISTED_ENGAGED = (
     "subscribers.status = 'blocklisted' "
     "AND (subscribers.id IN (SELECT DISTINCT subscriber_id FROM link_clicks) "
-    "OR subscribers.id IN (SELECT DISTINCT subscriber_id FROM campaign_views))"
+    "OR subscribers.id IN (SELECT DISTINCT subscriber_id FROM campaign_views)) "
+    # Only bounce-driven blocklists are candidates...
+    "AND subscribers.id IN (SELECT DISTINCT subscriber_id FROM bounces "
+    "WHERE type IN ('hard', 'soft')) "
+    # ...and never someone who filed a spam complaint.
+    "AND subscribers.id NOT IN (SELECT DISTINCT subscriber_id FROM bounces "
+    "WHERE type = 'complaint')"
 )
 
 # Backward-compatible alias
@@ -34,11 +51,36 @@ _unblock_lock = asyncio.Lock()
 _UNBLOCK_CONCURRENCY = 10
 
 
+def _unsubscribed_emails() -> set[str]:
+    """Every email the dashboard has ever handled as an unsubscribe request.
+
+    Uses the full processed map (no TTL) plus the display log, so neither an
+    expired dedup entry nor a deleted log record makes someone eligible.
+    """
+    emails = set(load_processed_map_all())
+    emails.update((r.get("email") or "").lower() for r in load_log() if r.get("email"))
+    emails.discard("")
+    return emails
+
+
 async def find_blocklisted_engaged(client: ListMonkClient) -> list[dict]:
-    """Find blocklisted subscribers who clicked or opened any campaign."""
-    return await client.paginate_all(
+    """Find bounce-blocklisted subscribers who clicked or opened a campaign.
+
+    Excludes anyone the unsubscribe engine handled (see module docstring).
+    """
+    candidates = await client.paginate_all(
         client.get_subscribers, per_page=500, query=QUERY_BLOCKLISTED_ENGAGED,
     )
+    if not candidates:
+        return candidates
+    suppressed = await asyncio.to_thread(_unsubscribed_emails)
+    kept = [s for s in candidates if (s.get("email") or "").lower() not in suppressed]
+    if len(kept) != len(candidates):
+        logger.info(
+            f"Auto-unblock: skipped {len(candidates) - len(kept)} subscriber(s) "
+            "who unsubscribed (their blocklist is deliberate)"
+        )
+    return kept
 
 
 async def find_blocklisted_clickers(client: ListMonkClient) -> list[dict]:

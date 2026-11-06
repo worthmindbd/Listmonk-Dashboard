@@ -135,6 +135,18 @@ async def run_scheduler_tick(client: ListMonkClient):
             )
             return
 
+        # Same reasoning for an empty window (start == end): it is never "in
+        # window", so ticking would pause everything forever. The API rejects
+        # it; this guards a hand-edited file.
+        if (schedule["start_hour"], schedule["start_minute"]) == (
+            schedule["end_hour"], schedule["end_minute"]
+        ):
+            logger.error(
+                "Schedule start and end times are identical (empty send window); "
+                "skipping this tick so running campaigns are not paused indefinitely."
+            )
+            return
+
         in_window = is_within_send_window(schedule)
         auto_paused = set(schedule.get("auto_paused_campaigns", []))
 
