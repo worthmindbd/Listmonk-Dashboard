@@ -94,7 +94,7 @@ async def delete_all_bounces(campaign_id: Optional[int] = None,
     all_bounces = await fetch_all_filtered_bounces(
         listmonk, bounce_type, campaign_id,
     )
-    bounce_ids = [b["id"] for b in all_bounces]
+    bounce_ids = [b["id"] for b in all_bounces if b.get("id")]
 
     if not bounce_ids:
         return {"deleted": 0, "errors": 0, "campaign_id": campaign_id}

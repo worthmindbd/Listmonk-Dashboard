@@ -106,7 +106,7 @@ const Analytics = {
                     <div style="font-size:0.8rem;color:var(--text-muted)">${totalSent ? ((totalClicks/totalSent)*100).toFixed(1) : 0}% CTR</div>
                 </div>
                 <div class="stat-card" style="border-left-color:#14b8a6">
-                    <div class="stat-label">Unsubscribes (IMAP)</div>
+                    <div class="stat-label">Total Unsubscribes</div>
                     <div class="stat-value" style="color:#14b8a6">${App.formatNumber(totalUnsubs)}</div>
                     <div style="font-size:0.8rem;color:var(--text-muted)"><a href="#/unsubscribes" style="color:#14b8a6;text-decoration:none">View details →</a></div>
                 </div>

@@ -185,8 +185,10 @@ const Subscribers = {
         try {
             const queryParam = this.query ? `?query=${encodeURIComponent(this.query)}` : '';
             const result = await API.get(`/api/subscribers/export-all${queryParam}`);
-            API.downloadBlob(result.blob, 'subscribers_export.csv');
-            App.toast('Export downloaded', 'success');
+            if (result && result.blob) {
+                API.downloadBlob(result.blob, 'subscribers_export.csv');
+                App.toast('Export downloaded', 'success');
+            }
         } catch {
             // API.request already surfaced the server message.
         }

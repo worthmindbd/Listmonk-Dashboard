@@ -56,7 +56,7 @@ const Campaigns = {
 
             campaigns.forEach(c => {
                 const listNames = (c.lists || []).map(l => `<span class="tag">${App.escapeHtml(l.name)}</span>`).join('') || '-';
-                const sent = c.to_send || 0;
+                const sent = c.sent !== undefined && c.sent !== null ? c.sent : (c.to_send || 0);
                 html += `<tr>
                     <td>${c.id}</td>
                     <td><strong>${App.escapeHtml(c.name)}</strong></td>

@@ -13,6 +13,7 @@ schedule.json
 .claude/
 .agents/
 .agent/
+.commandcode/
 
 # Runtime data
 unsubscribe_log.json

@@ -101,7 +101,7 @@ async def modify_list_memberships(data: dict):
 
 @router.put("/blocklist")
 async def blocklist_subscribers(data: dict):
-    return await listmonk.blocklist_subscribers(data.get("ids", []))
+    return await listmonk.blocklist_subscribers(data.get("ids") or [])
 
 
 @router.put("/{subscriber_id}")

@@ -188,9 +188,9 @@ const Unsubscribes = {
             groups.forEach(g => {
                 const readableDate = this.formatCampaignDate(g.campaign_key);
                 const cleanName = App.escapeHtml(this.cleanCampaignName(g.campaign_name));
-                const isClickable = Number.isInteger(g.campaign_id);
+                const cidArg = JSON.stringify(g.campaign_id);
                 html += `
-                    <div class="unsub-campaign-card" ${isClickable ? `onclick="Unsubscribes.openCampaign(${g.campaign_id})"` : 'style="cursor:default;opacity:0.75"'}>
+                    <div class="unsub-campaign-card" onclick="Unsubscribes.openCampaign(${cidArg})">
                         <div class="unsub-campaign-header">
                             <div class="unsub-campaign-info">
                                 <span class="badge badge-primary" style="font-size:0.8rem;padding:4px 10px;margin-right:8px">${readableDate}</span>
@@ -199,7 +199,7 @@ const Unsubscribes = {
                             </div>
                             <div class="unsub-campaign-meta">
                                 <span class="badge badge-default" style="font-size:0.8rem;text-transform:uppercase">${g.count} unsubscribe${g.count !== 1 ? 's' : ''}</span>
-                                ${isClickable ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-left:8px;color:var(--text-muted)"><polyline points="9 18 15 12 9 6"/></svg>` : ''}
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-left:8px;color:var(--text-muted)"><polyline points="9 18 15 12 9 6"/></svg>
                             </div>
                         </div>
                     </div>`;
@@ -251,11 +251,11 @@ const Unsubscribes = {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 Delete Selected${hasSelected ? ` (${this.selectedEmails.size})` : ''}
             </button>
-            <button class="btn btn-sm" onclick="Unsubscribes.exportCampaignCSV(${camp.campaign_id})">
+            <button class="btn btn-sm" onclick="Unsubscribes.exportCampaignCSV(${JSON.stringify(camp.campaign_id)})">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Export CSV
             </button>
-            <button class="btn btn-sm btn-danger" onclick="Unsubscribes.removeCampaign(${camp.campaign_id})">
+            <button class="btn btn-sm btn-danger" onclick="Unsubscribes.removeCampaign(${JSON.stringify(camp.campaign_id)})">
                 Remove List
             </button>
         `);

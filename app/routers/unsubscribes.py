@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from app.services.imap_unsubscribe import (
@@ -127,13 +128,28 @@ async def get_campaign_groups():
     return {"data": sorted_groups}
 
 
+def _matches_campaign_id(record_cid: Any, target_cid: str) -> bool:
+    """Match a record's campaign_id (int or None) against a string parameter.
+
+    Handles numeric IDs ('12'), string IDs ('12'), and unattributed records
+    grouped under 'unknown', 'none', 'null', or empty string.
+    """
+    if target_cid.lower() in ("unknown", "none", "null", ""):
+        return record_cid is None or record_cid == "unknown"
+    try:
+        target_int = int(target_cid)
+        return record_cid == target_int
+    except (ValueError, TypeError):
+        return str(record_cid) == target_cid
+
+
 @router.get("/campaign/{campaign_id}")
-async def get_campaign_records(campaign_id: int,
+async def get_campaign_records(campaign_id: str,
                                page: int = Query(1, ge=1, le=MAX_PAGE),
                                per_page: int = Query(50, ge=1, le=MAX_PER_PAGE)):
-    """Return paginated records for a specific campaign by its ID."""
+    """Return paginated records for a specific campaign by its ID (or 'unknown')."""
     records = load_log()
-    campaign_records = [r for r in records if r.get("campaign_id") == campaign_id]
+    campaign_records = [r for r in records if _matches_campaign_id(r.get("campaign_id"), campaign_id)]
     campaign_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
 
     total = len(campaign_records)
@@ -156,12 +172,12 @@ async def get_campaign_records(campaign_id: int,
 
 
 @router.delete("/campaign/{campaign_id}")
-async def delete_campaign_group(campaign_id: int):
-    """Delete all unsubscribe records for a specific campaign by its ID."""
+async def delete_campaign_group(campaign_id: str):
+    """Delete all unsubscribe records for a specific campaign by its ID (or 'unknown')."""
     async with _log_lock:
         records = load_log()
         before_count = len(records)
-        remaining = [r for r in records if r.get("campaign_id") != campaign_id]
+        remaining = [r for r in records if not _matches_campaign_id(r.get("campaign_id"), campaign_id)]
         removed = before_count - len(remaining)
         save_log(remaining)
     return {"removed": removed, "message": f"Removed {removed} record(s) from campaign {campaign_id}"}
@@ -180,10 +196,10 @@ async def delete_records(emails: list[str] = Query(default=[])):
 
 
 @router.get("/campaign/{campaign_id}/export")
-async def export_campaign_csv(campaign_id: int):
+async def export_campaign_csv(campaign_id: str):
     """Export a single campaign's unsubscribe records as CSV."""
     records = load_log()
-    campaign_records = [r for r in records if r.get("campaign_id") == campaign_id]
+    campaign_records = [r for r in records if _matches_campaign_id(r.get("campaign_id"), campaign_id)]
     if not campaign_records:
         raise HTTPException(status_code=404, detail="No records found for this campaign")
 
@@ -279,7 +295,7 @@ async def reset_all_unsubscribes():
             try:
                 # Step 1: Fetch current subscriber data from ListMonk
                 result = await listmonk.get_subscriber(sub_id)
-                subscriber = result.get("data", {})
+                subscriber = result.get("data") or {}
 
                 if not subscriber:
                     results[idx] = {
@@ -289,13 +305,13 @@ async def reset_all_unsubscribes():
                     return
 
                 # Step 2: Re-enable subscriber (remove blocklist)
-                current_lists = [lst["id"] for lst in subscriber.get("lists", [])]
+                current_lists = [lst["id"] for lst in (subscriber.get("lists") or [])]
                 await listmonk.update_subscriber(sub_id, {
                     "email": subscriber["email"],
-                    "name": subscriber.get("name", ""),
+                    "name": subscriber.get("name") or "",
                     "status": "enabled",
                     "lists": current_lists,
-                    "attribs": subscriber.get("attribs", {}),
+                    "attribs": subscriber.get("attribs") or {},
                 })
 
                 # Step 3: Re-subscribe to removed lists

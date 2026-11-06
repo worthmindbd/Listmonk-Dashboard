@@ -39,7 +39,7 @@ def load_schedule() -> dict:
     """Load schedule from JSON file."""
     if SCHEDULE_FILE.exists():
         try:
-            with open(SCHEDULE_FILE) as f:
+            with open(SCHEDULE_FILE, encoding="utf-8") as f:
                 data = json.load(f)
             # Merge with defaults for any missing keys
             merged = {**DEFAULT_SCHEDULE, **data}
@@ -70,7 +70,7 @@ def save_schedule(schedule: dict):
             prefix="schedule_",
             suffix=".tmp",
         )
-        with os.fdopen(temp_fd, "w") as f:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
             json.dump(schedule, f, indent=2)
         os.replace(temp_path, SCHEDULE_FILE)
     except OSError as e:

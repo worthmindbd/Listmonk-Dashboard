@@ -99,7 +99,7 @@ def _atomic_write_json(file_path: Path, data: Any, indent: int = 2, ensure_ascii
 
 def load_log() -> list[dict]:
     try:
-        records = json.loads(LOG_FILE.read_text())
+        records = json.loads(LOG_FILE.read_text(encoding="utf-8"))
         migrated = False
         for r in records:
             old_key = r.get("campaign_key", "")
@@ -145,7 +145,7 @@ def _load_processed_map() -> dict[str, float]:
     ``load_processed_emails`` applies the TTL for the IMAP scanner.
     """
     try:
-        data = json.loads(PROCESSED_FILE.read_text())
+        data = json.loads(PROCESSED_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         _backup_corrupt_file(PROCESSED_FILE)
         data = None
@@ -240,7 +240,7 @@ async def unmark_processed(emails) -> None:
 
 def load_settings() -> dict:
     try:
-        data = json.loads(SETTINGS_FILE.read_text())
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
         return {**_DEFAULT_SETTINGS, **data}
     except json.JSONDecodeError:
         # Corrupt settings must not be silently overwritten on the next save.

@@ -68,7 +68,7 @@ class ListMonkClient:
         seen = 0
         while True:
             result = await fetch_fn(page=page, per_page=per_page, **kwargs)
-            data = result.get("data", {})
+            data = result.get("data") or {}
             results = data.get("results", [])
             if not results:
                 return

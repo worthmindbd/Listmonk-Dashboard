@@ -98,7 +98,7 @@ async def delete_bounce_records_for_subscribers(client: ListMonkClient, subscrib
         async with sem:
             try:
                 res = await client.get_subscriber_bounces(sid)
-                bounces = res.get("data", [])
+                bounces = res.get("data") or []
                 for b in bounces:
                     bid = b.get("id")
                     if bid:
@@ -153,10 +153,10 @@ async def _unblock_subscribers_impl(client: ListMonkClient, subscribers: list[di
             try:
                 await client.update_subscriber(s["id"], {
                     "email": s["email"],
-                    "name": s.get("name", ""),
+                    "name": s.get("name") or "",
                     "status": "enabled",
-                    "lists": [l["id"] for l in s.get("lists", [])],
-                    "attribs": s.get("attribs", {}),
+                    "lists": [l["id"] for l in (s.get("lists") or [])],
+                    "attribs": s.get("attribs") or {},
                 })
                 success += 1
                 unblocked.append(s["email"])

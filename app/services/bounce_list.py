@@ -106,7 +106,7 @@ async def fetch_filtered_bounces_page(
         res = await client.get_bounces(
             lm_page, LM_FETCH_SIZE, campaign_id, source, bounce_type,
         )
-        data = res.get("data", {})
+        data = res.get("data") or {}
         lm_total = data.get("total", 0)
         raw_results = data.get("results", [])
         if not raw_results:
@@ -126,12 +126,13 @@ async def fetch_filtered_bounces_page(
                 collected.extend(batch)
             else:
                 hard_bounces = [b for b in batch if b.get("type") == "hard"]
-                other_bounces = [b for b in batch if b.get("type") != "hard"]
                 if hard_bounces:
                     filtered_hard = await filter_bounces_excluding_openers_fast(client, hard_bounces)
-                    collected.extend(filtered_hard + other_bounces)
+                    # Preserve original batch order by filtering in-place
+                    kept_hard_set = set(id(b) for b in filtered_hard)
+                    collected.extend([b for b in batch if b.get("type") != "hard" or id(b) in kept_hard_set])
                 else:
-                    collected.extend(other_bounces)
+                    collected.extend(batch)
 
         # Count rows actually received rather than page * size, so a server
         # that caps per_page below LM_FETCH_SIZE cannot end the walk early.
@@ -189,12 +190,13 @@ async def fetch_all_filtered_bounces(
         return all_bounces
 
     hard_bounces = [b for b in all_bounces if b.get("type") == "hard"]
-    other_bounces = [b for b in all_bounces if b.get("type") != "hard"]
     if not hard_bounces:
-        return other_bounces
+        return all_bounces
 
     if len(hard_bounces) <= 500:
         filtered_hard = await filter_bounces_excluding_openers_fast(client, hard_bounces)
     else:
         filtered_hard = await filter_bounces_excluding_openers(client, hard_bounces)
-    return filtered_hard + other_bounces
+    # Preserve original ordering by filtering excluded hard bounces in-place
+    kept_hard_set = set(id(b) for b in filtered_hard)
+    return [b for b in all_bounces if b.get("type") != "hard" or id(b) in kept_hard_set]

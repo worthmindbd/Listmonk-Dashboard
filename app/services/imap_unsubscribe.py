@@ -618,17 +618,19 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
             # Only fetch UNSEEN emails from the campaign month. Processed
             # messages are marked \Seen, so clearing/resetting the log no
             # longer causes old unsubscribe replies to be handled again.
+            thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
             if latest_campaign_date:
-                # Search from the 1st of the campaign month
-                since_date = latest_campaign_date.replace(day=1)
+                # Search from the 1st of the campaign month, guaranteeing at least a 30-day window
+                camp_month_start = latest_campaign_date.replace(day=1)
+                since_date = min(thirty_days_ago, camp_month_start)
                 since_str = imap_date(since_date)
                 status, msg_ids = await asyncio.to_thread(
                     conn.search, None, f'(UNSEEN SINCE {since_str})'
                 )
-                logger.info(f"[IMAP] Searching unseen emails SINCE {since_str} (campaign month)")
+                logger.info(f"[IMAP] Searching unseen emails SINCE {since_str} (campaign month / 30-day min)")
             else:
                 # Fallback: scan last 30 days if no campaigns found
-                since_date = datetime.now(timezone.utc) - timedelta(days=30)
+                since_date = thirty_days_ago
                 since_str = imap_date(since_date)
                 status, msg_ids = await asyncio.to_thread(
                     conn.search, None, f'(UNSEEN SINCE {since_str})'
@@ -763,17 +765,24 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
 
                         subscriber = subscribers[0]
                         sub_id = subscriber["id"]
-                        sub_lists = [lst["id"] for lst in subscriber.get("lists", [])]
+                        sub_lists = [lst["id"] for lst in (subscriber.get("lists") or [])]
 
-                        # Only process if subscriber belongs to a campaign's
-                        # target list — otherwise skip entirely.
+                        # Match against sent campaigns targeting any of subscriber's lists.
+                        # If no campaign matches, attribute to "No matching campaign" rather
+                        # than skipping — the user explicitly requested unsubscribe.
                         campaign = _match_campaign(
                             campaigns_list, email_date, set(sub_lists)
                         )
                         if not campaign:
-                            logger.info(f"[IMAP] No list-matched campaign for '{subject}' from {sender_email}; skipping")
-                            seen_skips.append(msg_id)
-                            continue
+                            logger.info(
+                                f"[IMAP] No list-matched campaign for '{subject}' from {sender_email}; "
+                                "attributing to 'No matching campaign'"
+                            )
+                            campaign = {
+                                "campaign_id": None,
+                                "campaign_name": "No matching campaign",
+                                "matched_list_id": sub_lists[0] if sub_lists else None,
+                            }
 
                         # Unsubscribe from all lists
                         if sub_lists:
@@ -798,8 +807,8 @@ async def scan_and_unsubscribe(client: ListMonkClient) -> dict:
                             "subject": subject,
                             "message_id": msg_message_id,
                             "campaign_key": f"{email_date.year}-{email_date.month:02d}",
-                            "campaign_id": campaign["campaign_id"],
-                            "campaign_name": campaign["campaign_name"],
+                            "campaign_id": campaign.get("campaign_id"),
+                            "campaign_name": campaign.get("campaign_name", "No matching campaign"),
                             "matched_list_id": campaign.get("matched_list_id"),
                             "subscriber_id": sub_id,
                             "lists_removed": sub_lists,

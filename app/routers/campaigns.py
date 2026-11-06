@@ -65,7 +65,7 @@ async def get_campaigns(page: int = Query(1, ge=1, le=MAX_PAGE),
     # Replace bounce counts with hard bounce counts from cache. Only do this
     # once the cache has been populated — otherwise raw (soft-inclusive)
     # counts would be mixed with hard counts.
-    campaigns = result.get("data", {}).get("results", [])
+    campaigns = (result.get("data") or {}).get("results", [])
     if campaigns and _hard_counts_ready():
         hard_counts = get_all_hard_bounce_counts()
         for c in campaigns:
@@ -95,8 +95,8 @@ async def export_campaign_analytics(analytics_type: str,
     """Export campaign analytics as CSV."""
     result = await listmonk.get_campaign_analytics(analytics_type, campaign_id,
                                                    from_date, to_date)
-    data = result.get("data", [])
-    if not data:
+    data = result.get("data")
+    if not isinstance(data, list) or not data:
         raise HTTPException(status_code=404, detail="No analytics data found")
 
     columns = list(data[0].keys())
@@ -228,7 +228,7 @@ async def export_campaign_subscribers(campaign_id: int, engagement_type: str):
         raise HTTPException(status_code=404, detail=f"No {engagement_type} subscribers found")
 
     for sub in all_subscribers:
-        sub["lists"] = ", ".join(l.get("name", "") for l in sub.get("lists", []))
+        sub["lists"] = ", ".join(l.get("name", "") for l in (sub.get("lists") or []))
         attribs = sub.get("attribs", {})
         if isinstance(attribs, dict):
             sub["attribs"] = json.dumps(attribs, ensure_ascii=False) if attribs else ""

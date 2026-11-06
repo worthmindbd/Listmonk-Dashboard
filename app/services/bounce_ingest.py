@@ -209,7 +209,15 @@ def _extract_bounced_recipient(msg: email.message.EmailMessage, body: str) -> Op
     own_addr = (settings.bounce_imap_user or "").lower()
 
     def usable(addr: Optional[str]) -> Optional[str]:
-        return addr if addr and addr != own_addr else None
+        if not addr:
+            return None
+        addr_lower = addr.lower()
+        if addr_lower == own_addr:
+            return None
+        local_part = addr_lower.split("@")[0]
+        if local_part in ("mailer-daemon", "postmaster", "mail-daemon", "daemon"):
+            return None
+        return addr_lower
 
     # 1. RFC 3464 per-recipient fields — the authoritative source.
     for part in _iter_report_parts(msg):
@@ -230,7 +238,7 @@ def _extract_bounced_recipient(msg: email.message.EmailMessage, body: str) -> Op
 
     # 3. Free-text fallback over the report text only (never the original).
     patterns = [
-        re.compile(r"delivery\s+to\s+<?(\S+@\S+\.\w+)>?", re.IGNORECASE),
+        re.compile(r"delivery\s+to\s+(?:the\s+following\s+(?:recipient[s]?[:\s]+)?)?<?(\S+@\S+\.\w+)>?", re.IGNORECASE),
         re.compile(r"recipient[:\s]+<?(\S+@\S+\.\w+)>?", re.IGNORECASE),
         re.compile(r"<(\S+@\S+\.\w+)>", re.IGNORECASE),
     ]
@@ -242,6 +250,11 @@ def _extract_bounced_recipient(msg: email.message.EmailMessage, body: str) -> Op
             addr = usable(addr)
             if addr:
                 return addr
+
+    for m in _ADDR_RE.finditer(body):
+        addr = usable(m.group(0))
+        if addr:
+            return addr
     return None
 
 
@@ -433,7 +446,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                         sub_res = await client.get_subscribers(
                             1, 1, f"subscribers.email = '{safe_email}'"
                         )
-                        subs = sub_res.get("data", {}).get("results", [])
+                        subs = (sub_res.get("data") or {}).get("results", [])
                     except Exception as e:
                         logger.warning(f"subscriber lookup failed for {recipient}: {e}")
                         errors += 1
@@ -446,7 +459,7 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                         continue
 
                     subscriber = subs[0]
-                    sub_list_ids = {l.get("id") for l in subscriber.get("lists", []) if l.get("id")}
+                    sub_list_ids = {l.get("id") for l in (subscriber.get("lists") or []) if l.get("id")}
 
                     # Campaign attribution
                     campaign = _pick_campaign(
