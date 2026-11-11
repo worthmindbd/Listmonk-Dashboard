@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from pathlib import Path
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 import httpx
 
 from app.services.listmonk_client import listmonk
@@ -29,7 +29,7 @@ from app.services.hard_bounce_cache import start_cache_updater, schedule_hard_bo
 from app.auth import (
     verify_session, create_session, clear_session, check_credentials,
     is_login_rate_limited, record_login_failure, clear_login_failures,
-    client_ip_from_request,
+    client_ip_from_request, is_trusted_proxy_peer,
 )
 from app.services.task_utils import spawn, shutdown as shutdown_tasks
 from app.routers import subscribers, lists, campaigns, templates, bounces, converter, unsubscribes
@@ -69,10 +69,33 @@ _hard_bounce_cache_task = None
 # ── Auth Middleware ───────────────────────────────────────
 
 def _is_https(request: Request) -> bool:
-    """True when the client reached us over TLS, directly or via a proxy."""
+    """True when the client reached us over TLS, directly or via a trusted proxy."""
     if request.url.scheme == "https":
         return True
+    if not is_trusted_proxy_peer(request):
+        return False
     return request.headers.get("x-forwarded-proto", "").lower() == "https"
+
+
+def _is_cross_site_mutation(request: Request) -> bool:
+    """True when a state-changing request carries cross-site browser indicators."""
+    if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
+        return False
+    sec_site = request.headers.get("sec-fetch-site", "").strip().lower()
+    if sec_site == "cross-site":
+        return True
+    origin = request.headers.get("origin", "").strip()
+    if origin:
+        from urllib.parse import urlsplit
+        origin_host = urlsplit(origin).netloc.strip().lower()
+        target_host = (
+            (request.headers.get("x-forwarded-host") if is_trusted_proxy_peer(request) else None)
+            or request.headers.get("host")
+            or ""
+        ).split(",")[0].strip().lower()
+        if not origin_host or (target_host and origin_host != target_host):
+            return True
+    return False
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -83,6 +106,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "same-origin")
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        response.headers.setdefault(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
+        # Authenticated pages/API responses carry subscriber data; do not let
+        # a browser or intermediary cache them after logout.
+        if not request.url.path.startswith("/static"):
+            response.headers.setdefault("Cache-Control", "no-store")
         # HSTS is only meaningful (and only safe) over TLS — sending it on a
         # plain-HTTP dev instance would make browsers refuse to ever retry.
         if _is_https(request):
@@ -99,6 +129,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+
+        if _is_cross_site_mutation(request):
+            return JSONResponse(status_code=403, content={"detail": "Cross-site request blocked"})
 
         # Allow static files, login page, and auth endpoints
         if path.startswith("/static") or path in self.OPEN_PATHS:
@@ -230,7 +263,10 @@ async def httpx_request_error_handler(request: Request, exc: httpx.RequestError)
     )
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-jinja_env = Environment(loader=FileSystemLoader(BASE_DIR / "templates"))
+jinja_env = Environment(
+    loader=FileSystemLoader(BASE_DIR / "templates"),
+    autoescape=select_autoescape(["html", "xml"]),
+)
 
 # Include routers
 app.include_router(subscribers.router, prefix="/api/subscribers", tags=["Subscribers"])
@@ -276,6 +312,11 @@ async def login(request: Request):
 
     username = data.get("username", "")
     password = data.get("password", "")
+    if not isinstance(username, str) or not isinstance(password, str):
+        # Malformed JSON types must be a normal failure, not an unhandled
+        # AttributeError (500), and should count against the rate limiter.
+        record_login_failure(client_ip)
+        raise HTTPException(status_code=400, detail="username and password must be strings")
 
     if not check_credentials(username, password):
         record_login_failure(client_ip)
@@ -332,9 +373,9 @@ async def auto_unblock_status():
             "interval_hours": AUTO_UNBLOCK_INTERVAL // 3600,
         }
     except Exception as e:
-        logger.error(f"auto-unblock status failed: {e}")
+        logger.error(f"auto-unblock status failed: {e}", exc_info=True)
         return {
-            "error": str(e),
+            "error": "Auto-unblock status is temporarily unavailable",
             "blocklisted_engaged": 0,
             "blocklisted_clickers": 0,
             "interval_hours": AUTO_UNBLOCK_INTERVAL // 3600,
@@ -350,7 +391,10 @@ async def auto_unblock_run_now():
         return await unblock_subscribers(listmonk, subs)
     except Exception as e:
         logger.error(f"auto-unblock run failed: {e}", exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Auto-unblock failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail="Auto-unblock failed; see the server log for details.",
+        )
 
 
 # ── Campaign Scheduler Endpoints ─────────────────────────
@@ -457,7 +501,10 @@ async def scheduler_run_now():
         await run_scheduler_tick(listmonk)
     except Exception as e:
         logger.error(f"scheduler run failed: {e}", exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Scheduler run failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail="Scheduler run failed; see the server log for details.",
+        )
     schedule = load_schedule()
     return {
         "status": "ok",

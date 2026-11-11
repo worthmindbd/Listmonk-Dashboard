@@ -32,7 +32,7 @@ def _is_client_ready() -> bool:
 async def update_hard_bounce_counts():
     """Fetch all bounces and count hard bounces per campaign."""
     global _hard_bounce_counts, _last_updated
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     async with _update_lock:
         try:
@@ -46,11 +46,14 @@ async def update_hard_bounce_counts():
             counts: dict[int, int] = {}
             for b in hard_bounces:
                 cid = bounce_campaign_id(b)
-                if cid:
-                    counts[cid] = counts.get(cid, 0) + 1
+                # Key 0 holds subscriber-level/unattributed hard bounces.
+                # Omitting them under-counted the list total and made rows
+                # beyond the attributed count unreachable in pagination.
+                key = cid if cid else 0
+                counts[key] = counts.get(key, 0) + 1
 
             _hard_bounce_counts = counts
-            _last_updated = datetime.now().isoformat()
+            _last_updated = datetime.now(timezone.utc).isoformat()
             logger.info(f"Hard bounce counts updated: {len(counts)} campaigns")
         except Exception as e:
             logger.error(f"Failed to update hard bounce counts: {e}", exc_info=True)
@@ -84,6 +87,11 @@ def schedule_hard_bounce_update(min_delay: float = 5.0) -> None:
 def get_hard_bounce_count(campaign_id: int) -> int:
     """Get cached hard bounce count for a campaign."""
     return _hard_bounce_counts.get(campaign_id, 0)
+
+
+def remove_campaign_hard_bounce_count(campaign_id: int) -> None:
+    """Drop a deleted campaign's cached hard bounce count immediately."""
+    _hard_bounce_counts.pop(campaign_id, None)
 
 
 def get_all_hard_bounce_counts() -> dict[int, int]:

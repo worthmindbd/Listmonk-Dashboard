@@ -32,7 +32,11 @@ from app.services.listmonk_client import ListMonkClient
 
 logger = logging.getLogger("bounce_ingest")
 
-from app.services.imap_helpers import safe_email_for_query, imap_date, extract_email_body
+# Socket/read timeout for the bounce mailbox. A hung IMAP server must not
+# freeze the hourly ingestion loop forever.
+IMAP_TIMEOUT_SECONDS = 30
+
+from app.services.imap_helpers import safe_email_for_query, imap_date
 
 
 # ─── Classification ──────────────────────────────────────────────────────────
@@ -58,7 +62,6 @@ HARD_KEYWORD_PATTERNS = [
     r"unknown recipient",
     r"does not have an? account",
     r"email account that you tried to reach does not exist",
-    r"relay access denied",
     r"no such (?:recipient|mailbox|address)",
 ]
 
@@ -104,6 +107,10 @@ def classify_bounce(body: str, subject: str = "") -> dict:
     lowered = text.lower()
     if "mailbox" in lowered and "full" in lowered:
         reason_tag = "soft: mailbox_full"
+    elif "relay access denied" in lowered:
+        # A relay/policy rejection says nothing about the recipient being
+        # invalid; treating it as hard would blocklist a working address.
+        reason_tag = "soft: relay_denied"
     elif "quota" in lowered:
         reason_tag = "soft: quota_exceeded"
     elif any(kw in lowered for kw in ("spamhaus", "blacklist", "blocklist", "rbl", "dnsbl")):
@@ -205,6 +212,34 @@ def _addr_from_recipient_field(value) -> Optional[str]:
     return match.group(0).lower() if match else None
 
 
+def _recipient_status_text(msg: email.message.EmailMessage,
+                           recipient: str) -> str:
+    """Return the RFC 3464 Status/Diagnostic-Code block for one recipient.
+
+    Classification used to scan the whole DSN body, so a multi-recipient
+    report could mark a 4.x.x recipient "hard" because another block contained
+    5.1.1. Restrict classification to the block matching the extracted address.
+    """
+    target = (recipient or "").lower()
+    chunks: list[str] = []
+    for part in _iter_report_parts(msg):
+        if part.get_content_type() != "message/delivery-status":
+            continue
+        for block in _delivery_status_blocks(part):
+            addr = None
+            for field in ("Final-Recipient", "Original-Recipient"):
+                addr = _addr_from_recipient_field(block.get(field))
+                if addr:
+                    break
+            if not addr or addr != target:
+                continue
+            for field in ("Action", "Status", "Diagnostic-Code", "Remote-MTA"):
+                value = block.get(field)
+                if value:
+                    chunks.append(f"{field}: {value}")
+    return "\n".join(chunks)
+
+
 def _extract_bounced_recipient(msg: email.message.EmailMessage, body: str) -> Optional[str]:
     own_addr = (settings.bounce_imap_user or "").lower()
 
@@ -273,7 +308,19 @@ def _extract_campaign_hint(msg: email.message.EmailMessage) -> Optional[str]:
     for part in msg.walk():
         if part.get_content_type() in ("message/rfc822", "text/rfc822-headers"):
             inner_payload = part.get_payload()
-            inner = inner_payload[0] if isinstance(inner_payload, list) and inner_payload else None
+            if isinstance(inner_payload, list):
+                inner = inner_payload[0] if inner_payload else None
+            elif isinstance(inner_payload, str) and inner_payload.strip():
+                # text/rfc822-headers parses as a plain string under
+                # policy.default; parse it so the campaign header is visible.
+                try:
+                    inner = email.message_from_string(
+                        inner_payload, policy=email.policy.default,
+                    )
+                except Exception:
+                    inner = None
+            else:
+                inner = None
             if inner is None:
                 continue
             for hdr in LISTMONK_CAMPAIGN_HEADERS:
@@ -292,9 +339,15 @@ def connect_bounce_imap_rw() -> Optional[imaplib.IMAP4_SSL]:
         return None
     try:
         if settings.bounce_imap_use_ssl:
-            conn = imaplib.IMAP4_SSL(settings.bounce_imap_host, settings.bounce_imap_port)
+            conn = imaplib.IMAP4_SSL(
+                settings.bounce_imap_host, settings.bounce_imap_port,
+                timeout=IMAP_TIMEOUT_SECONDS,
+            )
         else:
-            conn = imaplib.IMAP4(settings.bounce_imap_host, settings.bounce_imap_port)
+            conn = imaplib.IMAP4(
+                settings.bounce_imap_host, settings.bounce_imap_port,
+                timeout=IMAP_TIMEOUT_SECONDS,
+            )
         conn.login(settings.bounce_imap_user, settings.bounce_imap_pass)
         return conn
     except Exception as e:
@@ -315,6 +368,7 @@ CAMPAIGN_HISTORY_PAGE_SIZE = 100
 # passes they are marked \Seen anyway, or one poison message would be
 # re-fetched and re-failed on every hourly scan forever.
 POISON_MESSAGE_MAX_ATTEMPTS = 3
+
 # Keyed by Message-ID (or a content hash), NOT the IMAP sequence number:
 # sequence numbers shift whenever the mailbox is expunged, so a counter keyed
 # on them could consume a different, perfectly valid bounce.
@@ -338,7 +392,7 @@ async def _fetch_recent_campaigns(client: ListMonkClient) -> tuple[list[dict], b
         try:
             res = await client.get_campaigns(
                 page=page, per_page=CAMPAIGN_HISTORY_PAGE_SIZE,
-                order_by="created_at", order="DESC",
+                order_by="created_at", order="DESC", no_body=True,
             )
         except Exception as e:
             logger.warning(f"Could not fetch campaigns (page {page}): {e}")
@@ -402,7 +456,13 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
             for msg_id in ids:
                 poison_key: Optional[str] = None
                 try:
-                    status, data = await asyncio.to_thread(conn.fetch, msg_id, "(RFC822)")
+                    # BODY.PEEK, not RFC822/BODY[]: the latter implicitly sets
+                    # \Seen server-side, which made every "leave it unseen for
+                    # retry" path below ineffective and lost bounces during
+                    # ListMonk/IMAP outages.
+                    status, data = await asyncio.to_thread(
+                        conn.fetch, msg_id, "(BODY.PEEK[])"
+                    )
                     if status != "OK" or not data or not data[0]:
                         errors += 1
                         continue
@@ -507,7 +567,12 @@ async def ingest_bounce_mailbox(client: ListMonkClient) -> dict:
                         await asyncio.to_thread(conn.store, msg_id, "+FLAGS", "\\Seen")
                         continue
 
-                    classification = classify_bounce(body, subject)
+                    # Prefer the recipient-specific DSN block; fall back to
+                    # the human notice only when there is no usable block.
+                    status_context = _recipient_status_text(msg, recipient)
+                    classification = classify_bounce(
+                        status_context or body, subject,
+                    )
                     bounce_type = classification["type"]
 
                     try:

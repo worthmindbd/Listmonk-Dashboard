@@ -2,17 +2,19 @@ import asyncio
 import logging
 from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from app.services.imap_unsubscribe import (
     get_stats, check_imap_status, scan_and_unsubscribe,
 )
 from app.services.unsubscribe_log import (
-    load_log, save_log, load_settings, save_settings,
+    aload_log, asave_log, load_settings, save_settings,
+    aload_settings, asave_settings,
     unmark_processed, _log_lock,
 )
 from app.services.link_unsubscribe import scan_link_unsubscribes
 from app.services.listmonk_client import listmonk
 from app.services.export_service import dict_list_to_csv
+from app.services.task_utils import spawn
 
 router = APIRouter()
 
@@ -27,11 +29,17 @@ MAX_PER_PAGE = 200
 RESET_MAX_RECORDS = 5000
 RESET_CONCURRENCY = 10
 
+# Long reset/scan operations run in the background so a reverse proxy timeout
+# cannot make the UI report failure while the server is still working. A single
+# slot each; concurrent requests get the current status.
+_reset_job: dict | None = None
+_scan_job: dict | None = None
+
 
 @router.get("/settings")
 async def get_unsub_settings():
     """Return current unsubscribe scanner settings."""
-    return load_settings()
+    return await aload_settings()
 
 
 # Whitelist of persisted settings keys — arbitrary keys otherwise accumulate
@@ -56,8 +64,7 @@ async def update_unsub_settings(request: Request):
         )
     if "blocklist_enabled" in data and not isinstance(data["blocklist_enabled"], bool):
         raise HTTPException(status_code=400, detail="blocklist_enabled must be a boolean")
-    save_settings(data)
-    return load_settings()
+    return await asave_settings(data)
 
 
 @router.get("")
@@ -65,7 +72,7 @@ async def get_unsubscribes(page: int = Query(1, ge=1, le=MAX_PAGE),
                            per_page: int = Query(25, ge=1, le=MAX_PER_PAGE),
                            query: str = Query("", max_length=100)):
     """Return paginated unsubscribe records (newest first)."""
-    records = load_log()
+    records = await aload_log()
     if query:
         q = query.lower().strip()
         records = [
@@ -74,7 +81,7 @@ async def get_unsubscribes(page: int = Query(1, ge=1, le=MAX_PAGE),
             or q in (r.get("name") or "").lower()
             or q in (r.get("campaign_name") or "").lower()
         ]
-    records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    records.sort(key=lambda r: str(r.get("timestamp", "")), reverse=True)
     total = len(records)
     start = (page - 1) * per_page
     end = start + per_page
@@ -91,9 +98,9 @@ async def get_unsubscribes(page: int = Query(1, ge=1, le=MAX_PAGE),
 @router.get("/stats")
 async def get_unsubscribe_stats(campaign_id: str = ""):
     """Return aggregate unsubscribe counts. Optionally filter by campaign_id."""
-    stats = get_stats()
+    stats = await asyncio.to_thread(get_stats)
     if campaign_id:
-        records = load_log()
+        records = await aload_log()
         campaign_records = [r for r in records if _matches_campaign_id(r.get("campaign_id"), campaign_id)]
         stats["campaign_count"] = len(campaign_records)
         stats["campaign_link_count"] = sum(1 for r in campaign_records if r.get("source") == "link")
@@ -110,12 +117,12 @@ async def get_imap_status():
 @router.get("/campaigns")
 async def get_campaign_groups():
     """Return unsubscribe records grouped by individual campaign (campaign_id)."""
-    records = load_log()
+    records = await aload_log()
     groups: dict = {}
 
     for r in records:
         cid = r.get("campaign_id")
-        if cid is None or cid == 0 or cid == "0":
+        if cid is None or cid in (0, "0", ""):
             cid = "unknown"
         group_key = str(cid)
         if group_key not in groups:
@@ -157,7 +164,7 @@ def _matches_campaign_id(record_cid: Any, target_cid: str) -> bool:
     grouped under 'unknown', 'none', 'null', '0', or empty string.
     """
     if target_cid.lower() in ("unknown", "none", "null", ""):
-        return record_cid is None or record_cid in ("unknown", 0, "0")
+        return record_cid is None or record_cid in ("unknown", "", 0, "0")
     try:
         target_int = int(target_cid)
         return record_cid == target_int or str(record_cid) == target_cid
@@ -172,7 +179,7 @@ async def get_campaign_records(campaign_id: str,
                                query: str = Query("", max_length=100),
                                source: str = Query("", max_length=20)):
     """Return paginated records for a specific campaign by its ID (or 'unknown')."""
-    records = load_log()
+    records = await aload_log()
     campaign_records = [r for r in records if _matches_campaign_id(r.get("campaign_id"), campaign_id)]
 
     total_unfiltered = len(campaign_records)
@@ -219,11 +226,11 @@ async def get_campaign_records(campaign_id: str,
 async def delete_campaign_group(campaign_id: str):
     """Delete all unsubscribe records for a specific campaign by its ID (or 'unknown')."""
     async with _log_lock:
-        records = load_log()
+        records = await aload_log()
         before_count = len(records)
         remaining = [r for r in records if not _matches_campaign_id(r.get("campaign_id"), campaign_id)]
         removed = before_count - len(remaining)
-        save_log(remaining)
+        await asave_log(remaining)
     return {"removed": removed, "message": f"Removed {removed} record(s) from campaign {campaign_id}"}
 
 
@@ -232,7 +239,7 @@ async def delete_records(emails: list[str] = Query(default=[]),
                          campaign_id: str | None = Query(default=None)):
     """Delete specific unsubscribe records by email, optionally scoped to a campaign."""
     async with _log_lock:
-        records = load_log()
+        records = await aload_log()
         before_count = len(records)
         if campaign_id is not None:
             remaining = [
@@ -242,19 +249,19 @@ async def delete_records(emails: list[str] = Query(default=[]),
         else:
             remaining = [r for r in records if r.get("email") not in emails]
         removed = before_count - len(remaining)
-        save_log(remaining)
+        await asave_log(remaining)
     return {"removed": removed, "message": f"Removed {removed} record(s)"}
 
 
 @router.get("/campaign/{campaign_id}/export")
 async def export_campaign_csv(campaign_id: str):
     """Export a single campaign's unsubscribe records as CSV."""
-    records = load_log()
+    records = await aload_log()
     campaign_records = [r for r in records if _matches_campaign_id(r.get("campaign_id"), campaign_id)]
     if not campaign_records:
         raise HTTPException(status_code=404, detail="No records found for this campaign")
 
-    campaign_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    campaign_records.sort(key=lambda r: str(r.get("timestamp", "")), reverse=True)
     columns = ["email", "name", "source", "keyword", "campaign_name", "campaign_key", "timestamp"]
     safe_cid = "".join(c if c.isalnum() or c in "-_" else "_" for c in campaign_id)
     filename = f"unsubscribes_campaign_{safe_cid}.csv"
@@ -268,11 +275,11 @@ async def export_campaign_csv(campaign_id: str):
 @router.get("/export")
 async def export_unsubscribes():
     """Export all unsubscribe records as CSV."""
-    records = load_log()
+    records = await aload_log()
     if not records:
         raise HTTPException(status_code=404, detail="No unsubscribe records found")
 
-    records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    records.sort(key=lambda r: str(r.get("timestamp", "")), reverse=True)
     columns = ["email", "name", "source", "campaign_name", "campaign_key", "campaign_id", "keyword", "subject", "subscriber_id", "timestamp"]
     return StreamingResponse(
         dict_list_to_csv(records, columns),
@@ -281,15 +288,16 @@ async def export_unsubscribes():
     )
 
 
-@router.post("/scan")
-async def trigger_scan():
-    """Manually trigger both IMAP and link-based unsubscribe scans."""
+async def _perform_scan() -> dict:
     try:
         imap_result = await scan_and_unsubscribe(listmonk)
         link_result = await scan_link_unsubscribes(listmonk)
     except Exception as e:
         logging.getLogger("unsubscribes").error(f"unsubscribe scan failed: {e}", exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Scan failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail="Unsubscribe scan failed; see the server log for details.",
+        )
     total_processed = imap_result.get("processed", 0) + link_result.get("processed", 0)
     return {
         "imap": imap_result,
@@ -298,62 +306,86 @@ async def trigger_scan():
     }
 
 
+async def _run_scan_job() -> None:
+    global _scan_job
+    try:
+        result = await _perform_scan()
+        _scan_job = {"status": "finished", "result": result}
+    except HTTPException as e:
+        _scan_job = {"status": "failed", "error": e.detail}
+    except Exception as e:
+        logging.getLogger("unsubscribes").error(f"background scan failed: {e}", exc_info=True)
+        _scan_job = {"status": "failed", "error": "Unsubscribe scan failed"}
+
+
+@router.post("/scan")
+async def trigger_scan(background: bool = False):
+    """Manually trigger both IMAP and link-based unsubscribe scans.
+
+    ``background=true`` starts the scan and returns 202; poll /scan/status.
+    """
+    global _scan_job
+    if background:
+        if _scan_job and _scan_job.get("status") == "running":
+            return JSONResponse(status_code=202, content={"status": "running"})
+        _scan_job = {"status": "running"}
+        spawn(_run_scan_job())
+        return JSONResponse(status_code=202, content={"status": "started"})
+    return await _perform_scan()
+
+
+@router.get("/scan/status")
+async def scan_status():
+    return _scan_job or {"status": "idle"}
+
+
 @router.delete("/clear")
 async def clear_unsubscribes():
     """Clear all unsubscribe records to free storage."""
     async with _log_lock:
-        records = load_log()
+        records = await aload_log()
         count = len(records)
-        save_log([])
+        await asave_log([])
     return {"cleared": count, "message": f"Removed {count} record(s)"}
 
 
-@router.post("/reset")
-async def reset_all_unsubscribes():
-    """
-    UNDO all unsubscribe actions: re-subscribe users to their original lists,
-    remove blocklist status, and remove restored records from the log.
-    Failed records remain in the log so they can be retried.
-    """
-    records = load_log()
-    if not records:
-        return {"message": "No records to reset", "restored": 0, "failed": 0}
-
-    if len(records) > RESET_MAX_RECORDS:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Refusing to reset {len(records)} records at once "
-                f"(limit {RESET_MAX_RECORDS}). Remove records per campaign first."
-            ),
-        )
-
+async def _perform_reset(records: list[dict]) -> dict:
+    """Undo every current unsubscribe record (shared by sync/background mode)."""
     sem = asyncio.Semaphore(RESET_CONCURRENCY)
     results: list[dict] = [None] * len(records)  # type: ignore[list-item]
 
-    async def restore(idx: int, r: dict) -> None:
+    # Two log records can share a subscriber (e.g. reply-unsubscribe, then
+    # link-unsubscribe after re-subscribing). Restore that subscriber once,
+    # but retain per-record outcome counts and duplicate-key handling.
+    groups: dict[tuple, dict] = {}
+    for idx, r in enumerate(records):
+        key = (r.get("subscriber_id"), r.get("email", "unknown"))
+        group = groups.setdefault(key, {"indices": [], "lists_removed": set()})
+        group["indices"].append(idx)
+        for lid in r.get("lists_removed") or []:
+            group["lists_removed"].add(lid)
+
+    async def restore(key: tuple, group: dict) -> None:
+        sub_id, email_addr = key
+        indices = group["indices"]
+        lists_removed = sorted(group["lists_removed"])
+
+        def finish(ok: bool, detail: str) -> None:
+            for idx in indices:
+                results[idx] = {"ok": ok, "key": key, "detail": detail}
+
+        if not sub_id:
+            finish(False, f"SKIP {email_addr}: no subscriber_id")
+            return
+
         async with sem:
-            sub_id = r.get("subscriber_id")
-            email_addr = r.get("email", "unknown")
-            lists_removed = r.get("lists_removed", [])
-
-            if not sub_id:
-                results[idx] = {
-                    "ok": False, "key": (sub_id, email_addr),
-                    "detail": f"SKIP {email_addr}: no subscriber_id",
-                }
-                return
-
             try:
                 # Step 1: Fetch current subscriber data from ListMonk
                 result = await listmonk.get_subscriber(sub_id)
                 subscriber = result.get("data") or {}
 
                 if not subscriber:
-                    results[idx] = {
-                        "ok": False, "key": (sub_id, email_addr),
-                        "detail": f"SKIP {email_addr}: subscriber {sub_id} not found",
-                    }
+                    finish(False, f"SKIP {email_addr}: subscriber {sub_id} not found")
                     return
 
                 # Step 2: Re-enable subscriber (remove blocklist)
@@ -375,43 +407,44 @@ async def reset_all_unsubscribes():
                         "status": "confirmed",
                     })
 
-                results[idx] = {
-                    "ok": True, "key": (sub_id, email_addr),
-                    "detail": f"OK {email_addr}: enabled + re-added to lists {lists_removed}",
-                }
+                finish(
+                    True,
+                    f"OK {email_addr}: enabled + re-added to lists {lists_removed}",
+                )
 
             except Exception as e:
-                results[idx] = {
-                    "ok": False, "key": (sub_id, email_addr),
-                    "detail": f"FAIL {email_addr}: {e}",
-                }
+                logging.getLogger("unsubscribes").error(
+                    f"reset failed for {email_addr}: {e}", exc_info=True,
+                )
+                finish(False, f"FAIL {email_addr}: processing failed")
 
-    await asyncio.gather(*(restore(i, r) for i, r in enumerate(records)))
+    await asyncio.gather(*(restore(k, g) for k, g in groups.items()))
 
     details: list[str] = []
     restored_keys: set = set()
+    restored = 0
     for res in results:
         if res is None:
             continue
         details.append(res["detail"])
         if res["ok"]:
+            restored += 1
             restored_keys.add(res["key"])
             logging.getLogger("unsubscribes").info(res["detail"])
         else:
             logging.getLogger("unsubscribes").error(res["detail"])
 
-    restored = len(restored_keys)
     failed = len(records) - restored
 
     # Only clear records that were successfully restored;
     # failed records and newly arrived records stay in the log.
     async with _log_lock:
-        fresh_records = load_log()
+        fresh_records = await aload_log()
         remaining_records = [
             r for r in fresh_records
             if (r.get("subscriber_id"), r.get("email", "unknown")) not in restored_keys
         ]
-        save_log(remaining_records)
+        await asave_log(remaining_records)
 
     # Allow future unsubscribes from restored subscribers to be detected again.
     # (The suppressed-email set is intentionally NOT cleared when log records
@@ -426,3 +459,53 @@ async def reset_all_unsubscribes():
         "failed": failed,
         "details": details,
     }
+
+
+async def _run_reset_job(records: list[dict]) -> None:
+    global _reset_job
+    try:
+        result = await _perform_reset(records)
+        _reset_job = {"status": "finished", "result": result}
+    except HTTPException as e:
+        _reset_job = {"status": "failed", "error": e.detail}
+    except Exception as e:
+        logging.getLogger("unsubscribes").error(f"background reset failed: {e}", exc_info=True)
+        _reset_job = {"status": "failed", "error": "Reset failed"}
+
+
+@router.post("/reset")
+async def reset_all_unsubscribes(background: bool = False):
+    """
+    UNDO all unsubscribe actions: re-subscribe users to their original lists,
+    remove blocklist status, and remove restored records from the log.
+    Failed records remain in the log so they can be retried.
+
+    ``background=true`` starts the work and returns 202; poll /reset/status.
+    """
+    global _reset_job
+    records = await aload_log()
+    if not records:
+        return {"message": "No records to reset", "restored": 0, "failed": 0}
+
+    if len(records) > RESET_MAX_RECORDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Refusing to reset {len(records)} records at once "
+                f"(limit {RESET_MAX_RECORDS}). Remove records per campaign first."
+            ),
+        )
+
+    if background:
+        if _reset_job and _reset_job.get("status") == "running":
+            return JSONResponse(status_code=202, content={"status": "running"})
+        _reset_job = {"status": "running"}
+        spawn(_run_reset_job(records))
+        return JSONResponse(status_code=202, content={"status": "started"})
+
+    return await _perform_reset(records)
+
+
+@router.get("/reset/status")
+async def reset_status():
+    return _reset_job or {"status": "idle"}

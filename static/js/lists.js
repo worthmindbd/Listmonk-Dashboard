@@ -14,6 +14,13 @@ const Lists = {
             const data = result?.data || {};
             const lists = data.results || [];
             const total = data.total || 0;
+            // Deleting the last row on page > 1 used to leave an empty table
+            // with no pager (renderPagination returns '' for one page).
+            const maxPage = Math.max(1, Math.ceil(total / 50));
+            if (this.page > maxPage) {
+                this.page = maxPage;
+                return this.render();
+            }
 
             App.setActions(`
                 <button class="btn btn-sm btn-primary" onclick="Lists.showCreate()">+ New List</button>
@@ -43,8 +50,8 @@ const Lists = {
                 html += `<tr>
                     <td>${l.id}</td>
                     <td><strong>${App.escapeHtml(l.name)}</strong> ${tags}</td>
-                    <td><span class="badge badge-${l.type === 'public' ? 'info' : 'default'}">${l.type}</span></td>
-                    <td>${l.optin}</td>
+                    <td><span class="badge badge-${l.type === 'public' ? 'info' : 'default'}">${App.escapeHtml(l.type || '')}</span></td>
+                    <td>${App.escapeHtml(l.optin || '')}</td>
                     <td>${App.formatNumber(l.subscriber_count || 0)}</td>
                     <td>${App.statusBadge(l.status || 'active')}</td>
                     <td>${App.formatDate(l.created_at)}</td>
@@ -116,6 +123,7 @@ const Lists = {
 
         try {
             await API.post('/api/lists', { name, type, optin, description, tags });
+            if (typeof Subscribers !== 'undefined') Subscribers.lists = [];
             App.toast('List created', 'success');
             this.render();
         } catch {
@@ -124,8 +132,10 @@ const Lists = {
     },
 
     async showEdit(id) {
+        const gen = App.beginRender();
         try {
             const result = await API.get(`/api/lists/${id}`);
+            if (!App.isRenderCurrent(gen)) return;
             const l = result?.data || {};
 
             App.setContent(`
@@ -170,6 +180,7 @@ const Lists = {
 
         try {
             await API.put(`/api/lists/${id}`, { name, type, optin, description, tags });
+            if (typeof Subscribers !== 'undefined') Subscribers.lists = [];
             App.toast('List updated', 'success');
             this.render();
         } catch {
@@ -181,6 +192,7 @@ const Lists = {
         if (await App.confirm('Delete List', 'Are you sure you want to delete this list? All subscriber associations will be removed.')) {
             try {
                 await API.del(`/api/lists/${id}`);
+                if (typeof Subscribers !== 'undefined') Subscribers.lists = [];
                 App.toast('List deleted', 'success');
                 this.render();
             } catch {

@@ -86,19 +86,22 @@ const Settings = {
         ];
     },
 
+    _schedulerStatusHtml(s) {
+        if (!s.enabled) {
+            return '<span class="badge badge-default" style="font-size:0.9rem;padding:6px 14px">DISABLED</span>';
+        }
+        if (s.in_send_window) {
+            return '<span class="badge badge-success" style="font-size:0.9rem;padding:6px 14px">SENDING - Inside send window</span>';
+        }
+        return '<span class="badge badge-warning" style="font-size:0.9rem;padding:6px 14px">PAUSED - Outside send window</span>';
+    },
+
     renderScheduler() {
         const s = this.schedule;
         const enabled = s.enabled;
         const inWindow = s.in_send_window;
 
-        let statusHtml;
-        if (!enabled) {
-            statusHtml = '<span class="badge badge-default" style="font-size:0.9rem;padding:6px 14px">DISABLED</span>';
-        } else if (inWindow) {
-            statusHtml = '<span class="badge badge-success" style="font-size:0.9rem;padding:6px 14px">SENDING - Inside send window</span>';
-        } else {
-            statusHtml = '<span class="badge badge-warning" style="font-size:0.9rem;padding:6px 14px">PAUSED - Outside send window</span>';
-        }
+        const statusHtml = this._schedulerStatusHtml(s);
 
         const allDays = [
             { key: 'mon', label: 'Mon' }, { key: 'tue', label: 'Tue' },
@@ -121,18 +124,35 @@ const Settings = {
         };
         const minuteOptions = (selectedMin) => {
             let html = '';
-            for (let m = 0; m < 60; m += 15) {
+            // Every minute is valid via the API; a 15-minute list silently
+            // rewrote a saved :05/:10/... value to :00 on the next save.
+            for (let m = 0; m < 60; m++) {
                 html += `<option value="${m}" ${m === selectedMin ? 'selected' : ''}>${m.toString().padStart(2, '0')}</option>`;
             }
             return html;
         };
 
-        const timezones = [
-            'US/Eastern', 'US/Central', 'US/Mountain', 'US/Pacific',
-            'UTC', 'Europe/London', 'Europe/Berlin', 'Europe/Paris',
-            'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Kolkata', 'Asia/Dhaka',
-            'Australia/Sydney', 'Pacific/Auckland',
-        ];
+        let timezones = [];
+        try {
+            if (typeof Intl.supportedValuesOf === 'function') {
+                timezones = Intl.supportedValuesOf('timeZone');
+            }
+        } catch {}
+        if (!timezones.length) {
+            timezones = [
+                'US/Eastern', 'US/Central', 'US/Mountain', 'US/Pacific',
+                'UTC', 'Europe/London', 'Europe/Berlin', 'Europe/Paris',
+                'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Kolkata', 'Asia/Dhaka',
+                'Australia/Sydney', 'Pacific/Auckland',
+            ];
+        }
+        // Never lose a timezone the browser doesn't know about: without its
+        // own option the select falls back to the first entry and Save
+        // silently changes the schedule.
+        if (s.timezone && !timezones.includes(s.timezone)) {
+            timezones = [s.timezone, ...timezones];
+        }
+        if (!timezones.includes('UTC')) timezones.push('UTC');
         const tzOptions = timezones.map(tz =>
             `<option value="${tz}" ${tz === s.timezone ? 'selected' : ''}>${tz}</option>`
         ).join('');
@@ -144,7 +164,7 @@ const Settings = {
                 <div class="card-header">
                     <h3 class="card-title">Campaign Send Window</h3>
                     <div class="action-btns">
-                        ${statusHtml}
+                        <span id="schedulerStatusBadge">${statusHtml}</span>
                         <button class="btn btn-sm" onclick="Settings.runSchedulerNow()">Check Now</button>
                     </div>
                 </div>
@@ -157,11 +177,10 @@ const Settings = {
                         <span style="color:var(--text-muted);font-size:0.85rem">Window:</span>
                         <strong>${this.formatTime(s.start_hour, s.start_minute)} - ${this.formatTime(s.end_hour, s.end_minute)} ${s.timezone}</strong>
                     </div>
-                    ${autoPaused.length ? `
                     <div>
                         <span style="color:var(--text-muted);font-size:0.85rem">Auto-paused campaigns:</span>
-                        <strong style="color:var(--warning)">${autoPaused.length}</strong>
-                    </div>` : ''}
+                        <strong id="autoPausedCount" style="color:var(--warning)">${autoPaused.length}</strong>
+                    </div>
                 </div>
             </div>
 
@@ -247,22 +266,18 @@ const Settings = {
         const failed = Boolean(u.error);
         const count = u.blocklisted_engaged ?? u.blocklisted_clickers ?? 0;
         const interval = u.interval_hours || 6;
-        const statusBadge = failed
-            ? `<span class="badge badge-danger" style="font-size:0.9rem;padding:6px 14px" title="${App.escapeHtml(u.error)}">Status unavailable</span>`
-            : count > 0
-                ? `<span class="badge badge-warning" style="font-size:0.9rem;padding:6px 14px">${count} blocklisted engaged subscriber(s) found</span>`
-                : '<span class="badge badge-success" style="font-size:0.9rem;padding:6px 14px">All clear</span>';
+        const statusBadge = this._unblockBadgeHtml(u);
 
         return `
             <div class="card" style="margin-bottom:20px">
                 <div class="card-header">
                     <h3 class="card-title">Auto-Unblock Status</h3>
-                    <div class="action-btns">${statusBadge}</div>
+                    <div class="action-btns" id="unblockStatusBadge">${statusBadge}</div>
                 </div>
                 <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
                     <div>
                         <span style="color:var(--text-muted);font-size:0.85rem">Blocklisted engaged:</span>
-                        <strong style="color:${failed ? 'var(--text-muted)' : (count > 0 ? 'var(--warning)' : 'var(--success)')}">${failed ? '—' : count}</strong>
+                        <strong id="unblockCount" style="color:${failed ? 'var(--text-muted)' : (count > 0 ? 'var(--warning)' : 'var(--success)')}">${failed ? '—' : count}</strong>
                     </div>
                     <div>
                         <span style="color:var(--text-muted);font-size:0.85rem">Auto-check interval:</span>
@@ -275,7 +290,7 @@ const Settings = {
                 <div class="card-header"><h3 class="card-title">Manual Unblock</h3></div>
                 <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:16px">
                     Click the button below to scan for subscribers who opened or clicked campaigns but got blocklisted due to bounces.
-                    They will be re-enabled and their bounce records will be deleted.
+                    They will be re-enabled, restored to their lists, and their bounce records will be deleted.
                 </p>
                 <button class="btn btn-primary" id="runUnblockBtn" onclick="Settings.runUnblock()">
                     Run Auto-Unblock Now
@@ -289,7 +304,7 @@ const Settings = {
                     <p><strong>Every ${interval} hours</strong>, the system automatically:</p>
                     <ul style="padding-left:20px;margin:8px 0">
                         <li>Finds subscribers who <strong>opened or clicked</strong> any campaign but were <strong>blocklisted because of a bounce</strong></li>
-                        <li><strong>Re-enables</strong> them (removes blocklist status)</li>
+                        <li><strong>Re-enables</strong> them and restores their list memberships</li>
                         <li><strong>Deletes</strong> their bounce records (since they clearly received the email)</li>
                     </ul>
                     <p>This protects real subscribers who get falsely bounced — e.g. security scanners that pre-scan links, or delayed bounce DSNs after the recipient already opened the email.</p>
@@ -297,6 +312,18 @@ const Settings = {
                 </div>
             </div>
         `;
+    },
+
+    _unblockBadgeHtml(u) {
+        const failed = Boolean(u.error);
+        const count = u.blocklisted_engaged ?? u.blocklisted_clickers ?? 0;
+        if (failed) {
+            return `<span class="badge badge-danger" style="font-size:0.9rem;padding:6px 14px" title="${App.escapeHtml(u.error)}">Status unavailable</span>`;
+        }
+        if (count > 0) {
+            return `<span class="badge badge-warning" style="font-size:0.9rem;padding:6px 14px">${count} blocklisted engaged subscriber(s) found</span>`;
+        }
+        return '<span class="badge badge-success" style="font-size:0.9rem;padding:6px 14px">All clear</span>';
     },
 
     // ── Scheduler Actions ────────────────────────────────
@@ -355,7 +382,7 @@ const Settings = {
             const result = await API.post('/api/scheduler/run');
             const status = result.in_send_window ? 'Inside send window' : 'Outside send window';
             const paused = result.auto_paused_campaigns?.length || 0;
-            App.toast(`${status} | ${paused} campaign(s) auto-paused`, 'info');
+            App.toast(`${status} | ${paused} campaign(s) currently auto-paused`, 'info');
             this.schedule = await API.get('/api/scheduler');
             this.renderTab();
         } catch {
@@ -384,15 +411,28 @@ const Settings = {
                 }
                 resultEl.innerHTML = html;
             }
-            // Refresh status
-            this.unblockStatus = await API.get('/api/auto-unblock/status');
         } catch {
             // API.request already surfaced the server message; reflect it inline.
             resultEl.innerHTML = '<div class="badge badge-danger" style="padding:8px 14px">Auto-unblock run failed — see the notification above</div>';
         } finally {
-            btn.disabled = false;
-            btn.textContent = 'Run Auto-Unblock Now';
+            // Refresh the status card separately: a failed refresh must not
+            // turn a successful run into a red "failed" banner.
+            try {
+                this.unblockStatus = await API.get('/api/auto-unblock/status');
+                const badge = document.getElementById('unblockStatusBadge');
+                if (badge) badge.innerHTML = this._unblockBadgeHtml(this.unblockStatus || {});
+                const countEl = document.getElementById('unblockCount');
+                if (countEl) {
+                    const u = this.unblockStatus || {};
+                    const failed = Boolean(u.error);
+                    const count = u.blocklisted_engaged ?? u.blocklisted_clickers ?? 0;
+                    countEl.textContent = failed ? '—' : count;
+                    countEl.style.color = failed ? 'var(--text-muted)' : (count > 0 ? 'var(--warning)' : 'var(--success)');
+                }
+            } catch { /* API.request surfaced the error; keep the run result */ }
         }
+        btn.disabled = false;
+        btn.textContent = 'Run Auto-Unblock Now';
     },
 
     // ── Auto-refresh ─────────────────────────────────────
@@ -408,6 +448,10 @@ const Settings = {
             this.schedule = await API.get('/api/scheduler');
             const el = document.getElementById('schedulerCurrentTime');
             if (el) el.textContent = this.schedule.current_time || '-';
+            const badge = document.getElementById('schedulerStatusBadge');
+            if (badge) badge.innerHTML = this._schedulerStatusHtml(this.schedule);
+            const countEl = document.getElementById('autoPausedCount');
+            if (countEl) countEl.textContent = (this.schedule.auto_paused_campaigns || []).length;
         } catch {}
     },
 };

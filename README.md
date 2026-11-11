@@ -2,16 +2,16 @@
 
 A modern, dark-themed management dashboard and automation suite for your self-hosted [ListMonk](https://listmonk.app/) instance. Built with FastAPI and vanilla JavaScript.
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.141-green) ![Docker](https://img.shields.io/badge/Docker-Ready-blue) ![License](https://img.shields.io/badge/License-MIT-yellow)
+![Python](https://img.shields.io/badge/Python-3.12+-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.141-green) ![Docker](https://img.shields.io/badge/Docker-Ready-blue) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ---
 
 ## Features
 
 ### Core Management
-- **Subscribers** — Search, filter by list, create, edit, delete, blocklist, bulk blocklist, and bulk delete. Export all subscribers or individual subscriber profiles.
+- **Subscribers** — Search, filter by list, create, edit, delete, and blocklist. Bulk blocklist/delete are available through the JSON API. Export all subscribers or individual subscriber profiles.
 - **Lists** — Create and manage mailing lists with tags, type (`public`/`private`), and opt-in settings (`single`/`double`).
-- **Campaigns** — Full campaign lifecycle management: create, edit, start, pause, resume, cancel, archive, delete, HTML preview, and test sends.
+- **Campaigns** — Full campaign lifecycle management: create, edit, start, pause, resume, cancel, archive/unarchive, delete, and HTML preview. Test sends are available through the API.
 - **Templates** — Create, edit, and preview HTML email templates, with one-click default template assignment.
 - **Bounces** — View and filter bounces by campaign or type (`hard`/`soft`), delete individual records, or delete filtered sets with parallel execution. Export bounce records with campaign attribution as CSV.
 - **Unsubscribes** — Unified dashboard tracking both IMAP reply unsubscribes and direct link clicks with campaign grouping, per-campaign CSV export, and undo/reset capabilities.
@@ -46,7 +46,7 @@ ListMonk requires a specific CSV format (`email`, `name`, `attributes` as JSON).
 
 ### Settings & Automation
 - **Campaign Scheduler** — Enforces daily sending windows (e.g., 8:00 AM – 8:00 PM EST) and allowed days (Mon–Fri, weekends). Running campaigns outside the window auto-pause, and auto-paused campaigns automatically resume when the window opens.
-- **Auto-Unblock Protection** — Identifies engaged subscribers (who clicked links or opened campaigns) who were accidentally blocklisted by false bounces, re-enables them, and purges their bounce records. Runs every 6 hours or manually. Deliberate blocklists are never reversed: subscribers with no bounce record (e.g. blocklisted by hand), spam complainers, and anyone in the unsubscribe log stay blocklisted.
+- **Auto-Unblock Protection** — Identifies engaged subscribers (who clicked links or opened campaigns) who were accidentally blocklisted by false bounces, re-enables them, restores their list memberships, and purges their bounce records. Runs every 6 hours or manually. Deliberate blocklists are never reversed: subscribers with no bounce record (e.g. blocklisted by hand), spam complainers, and anyone in the unsubscribe log stay blocklisted.
 - **Persistent Data Store** — Runtime configuration and logs persist to `DATA_DIR` (backed by a named volume in Docker).
 
 ### Security
@@ -131,6 +131,10 @@ BOUNCE_IMAP_USE_SSL=true
 # DATA_DIR=/data
 ```
 
+The ListMonk API user must be allowed to read/manage subscribers and lists, and
+to use subscriber query expressions (`subscribers:sql_query` in newer ListMonk
+versions). The bounce/opener/attribution filters rely on those queries.
+
 Generate a random session secret:
 ```bash
 python3 -c "import secrets; print(secrets.token_hex(32))"
@@ -195,7 +199,7 @@ The dashboard runs five background loops started during application lifecycle:
 | **Hard Bounce Cache** | On startup + every 5 min | Computes true hard bounce counts per campaign, excluding openers |
 | **IMAP & Link Unsubscribe Scan** | Every 1 hour | Scans inbox for reply keywords and polls ListMonk for link unsubscribes |
 | **Bounce Ingestion** | Every 1 hour | Ingests and classifies unseen DSNs from the bounce IMAP mailbox |
-| **Auto-Unblock Protection** | Every 6 hours | Scans for engaged contacts blocklisted by a bounce, re-enables them, and purges bounce records |
+| **Auto-Unblock Protection** | Every 6 hours | Scans for engaged contacts blocklisted by a bounce, re-enables them, restores list memberships, and purges bounce records |
 
 ---
 
@@ -208,7 +212,7 @@ ListMonk-Dashboard/
     auth.py                    # Session cookie creation, signing, and verification
     config.py                  # Settings loader and DATA_DIR path resolver
     routers/
-      subscribers.py           # Subscriber CRUD, import status, bulk blocklist/delete, exports
+      subscribers.py           # Subscriber CRUD, import status, bulk blocklist/delete API, exports
       lists.py                 # List CRUD
       campaigns.py             # Campaign CRUD, running stats, analytics, viewer/clicker/bounce exports
       templates.py             # Template CRUD & default template selection
@@ -238,12 +242,12 @@ ListMonk-Dashboard/
       api.js                   # Fetch API wrapper with 401 handling
       app.js                   # Single-Page Application router, bounces view, notifications
       analytics.js             # Campaign analytics charts and link click tracking
-      campaigns.js             # Campaign management, status transitions, test sends
+      campaigns.js             # Campaign management, status transitions, archive, details
       charts.js                # Dashboard overview charts & summary cards
       converter.js             # CSV converter UI, column mapping, and import modal
       lists.js                 # Mailing list management
       settings.js              # Settings UI (scheduler, auto-unblock, unsubscribe toggles)
-      subscribers.js           # Subscriber management, search, edit modal, bulk actions
+      subscribers.js           # Subscriber management, search, list filter, edit modal
       unsubscribes.js          # Campaign-grouped unsubscribe view, source badges, undo/reset
       vendor/chart.umd.min.js  # Vendored Chart.js 4.5.1 (no CDN dependency)
     favicon.png
@@ -256,6 +260,7 @@ ListMonk-Dashboard/
     test_bounce_classify.py    # RFC 3463 bounce classifier tests
     test_bounce_filters.py     # Opener exclusion & false positive filter tests
     test_link_unsubscribe.py   # Link unsubscribe scanner & dedup tests
+    test_fixes_round5.py       # Fifth-review regression tests (subscriber lists, search, IMAP, archive, jobs)
     test_regressions.py        # Route order, IMAP seen-marking, deleted-campaign flagging, timestamp regressions
   .github/workflows/
     deploy.yml                 # Automated SSH deploy on push to main
@@ -345,10 +350,12 @@ Once running, visit **http://localhost:8000/docs** for the interactive Swagger U
 | | `DELETE /api/unsubscribes/campaign/{id}` | DELETE | Delete unsubscribe records for a campaign |
 | | `DELETE /api/unsubscribes/records` | DELETE | Delete specific records by email |
 | | `GET /api/unsubscribes/export` | GET | Export all unsubscribe records as CSV |
-| | `POST /api/unsubscribes/scan` | POST | Trigger combined IMAP + link unsubscribe scan |
+| | `POST /api/unsubscribes/scan` | POST | Trigger combined IMAP + link unsubscribe scan (`?background=true` for async) |
+| | `GET /api/unsubscribes/scan/status` | GET | Background scan status |
 | | `GET /api/unsubscribes/imap-status` | GET | Check IMAP connection health |
 | | `DELETE /api/unsubscribes/clear` | DELETE | Clear all unsubscribe log records |
-| | `POST /api/unsubscribes/reset` | POST | Undo/reset all unsubscribes & restore memberships |
+| | `POST /api/unsubscribes/reset` | POST | Undo/reset all unsubscribes & restore memberships (`?background=true` for async) |
+| | `GET /api/unsubscribes/reset/status` | GET | Background reset status |
 
 ---
 
@@ -368,7 +375,7 @@ pytest -v
 
 ## Requirements & Prerequisites
 
-- **Python 3.10+** (or Docker)
+- **Python 3.12+** (or Docker)
 - A running **ListMonk** instance with REST API access
 - **Individual Subscriber Tracking** must be enabled in ListMonk:
   - Go to **ListMonk Settings > Privacy > Individual subscriber tracking** → Turn **ON**
@@ -379,3 +386,9 @@ pytest -v
 ## Developed by
 
 [WorthMind](https://worthmind.net/)
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

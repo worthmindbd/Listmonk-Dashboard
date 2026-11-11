@@ -194,7 +194,7 @@ class _HistoryClient:
             for i in range(total)
         ]
 
-    async def get_campaigns(self, page=1, per_page=100, order_by="", order=""):
+    async def get_campaigns(self, page=1, per_page=100, order_by="", order="", **kwargs):
         chunk = self.camps[(page - 1) * per_page: page * per_page]
         return {"data": {"results": chunk, "total": len(self.camps)}}
 

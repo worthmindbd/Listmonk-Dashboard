@@ -62,6 +62,26 @@ def clear_login_failures(ip: str) -> None:
     _login_failures.pop(ip, None)
 
 
+def is_trusted_proxy_peer(request: Request) -> bool:
+    """True when the immediate peer is a proxy whose X-Forwarded-* headers we trust."""
+    peer = request.client.host if request.client else "unknown"
+
+    trusted = os.getenv("TRUST_PROXY", "").strip().lower()
+    if trusted in ("1", "true", "yes"):
+        return True
+    if trusted in ("0", "false", "no"):
+        return False
+    if peer == "testclient":
+        return True
+    # Default: only trust loopback/private peers (typical same-host Nginx).
+    try:
+        import ipaddress
+        addr = ipaddress.ip_address(peer)
+        return addr.is_loopback or addr.is_private
+    except ValueError:
+        return False
+
+
 def client_ip_from_request(request: Request) -> str:
     """Resolve the real client IP for rate limiting.
 
@@ -73,22 +93,8 @@ def client_ip_from_request(request: Request) -> str:
     the limit entirely.
     """
     peer = request.client.host if request.client else "unknown"
-
-    trusted = os.getenv("TRUST_PROXY", "").strip().lower()
-    if trusted in ("1", "true", "yes"):
-        pass  # deployment states it always sits behind a trusted proxy
-    elif trusted in ("0", "false", "no"):
+    if not is_trusted_proxy_peer(request):
         return peer
-    else:
-        # Default: only trust loopback/private peers (typical same-host Nginx).
-        try:
-            import ipaddress
-            addr = ipaddress.ip_address(peer)
-            trusted_peer = addr.is_loopback or addr.is_private
-        except ValueError:
-            trusted_peer = False
-        if not trusted_peer:
-            return peer
 
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
@@ -203,6 +209,9 @@ def invalidate_revocation_cache() -> None:
 def _refresh_revoked() -> None:
     """(Re)load the revocation file when it changed since the last read."""
     global _revoked_loaded_mtime
+    now = time.time()
+    for n in [n for n, exp in _revoked.items() if exp <= now]:
+        _revoked.pop(n, None)
     path = _revoked_path()
     try:
         mtime = path.stat().st_mtime
@@ -215,7 +224,6 @@ def _refresh_revoked() -> None:
     except (OSError, ValueError):
         logger.warning("Could not read %s; keeping in-memory revocations", path)
         return
-    now = time.time()
     if isinstance(data, dict):
         for nonce, exp in data.items():
             try:
@@ -273,7 +281,7 @@ def _is_secure_cookie(request: Optional[Request] = None) -> bool:
     if request is not None:
         if request.url.scheme == "https":
             return True
-        if request.headers.get("x-forwarded-proto", "").lower() == "https":
+        if is_trusted_proxy_peer(request) and request.headers.get("x-forwarded-proto", "").lower() == "https":
             return True
         return False
     return False

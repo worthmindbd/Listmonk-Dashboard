@@ -19,6 +19,13 @@ const Campaigns = {
             const data = result?.data || {};
             const campaigns = data.results || [];
             const total = data.total || 0;
+            // Deleting the last row on page > 1 used to leave an empty table
+            // with no pager (renderPagination returns '' for one page).
+            const maxPage = Math.max(1, Math.ceil(total / 50));
+            if (this.page > maxPage) {
+                this.page = maxPage;
+                return this.render();
+            }
 
             App.setActions(`
                 <button class="btn btn-sm" onclick="Campaigns.exportAll()">Export CSV</button>
@@ -190,11 +197,14 @@ const Campaigns = {
     },
 
     async showDetail(id) {
+        const gen = App.beginRender();
+        if (typeof Dashboard !== 'undefined' && Dashboard.destroyCharts) Dashboard.destroyCharts();
         try {
             const [result, unsubRes] = await Promise.allSettled([
-                API.get(`/api/campaigns/${id}`),
+                API.get(`/api/campaigns/${id}?no_body=true`),
                 API.get(`/api/unsubscribes/campaign/${id}`),
             ]);
+            if (!App.isRenderCurrent(gen)) return;
 
             const c = result.status === 'fulfilled' ? (result.value?.data || {}) : {};
             if (!c.id) throw new Error('Campaign not found');
@@ -219,6 +229,8 @@ const Campaigns = {
                             <button class="btn btn-sm" onclick="Campaigns.viewAnalytics(${c.id})">View Analytics</button>
                             <button class="btn btn-sm" onclick="Campaigns.exportCampaign(${c.id})">Export CSV</button>
                             <button class="btn btn-sm" onclick="Campaigns.preview(${c.id})">Preview</button>
+                            <button class="btn btn-sm" onclick="Campaigns.toggleArchive(${c.id}, ${c.archive ? 'false' : 'true'})">${c.archive ? 'Unarchive' : 'Archive'}</button>
+                            ${c.status === 'running' ? `<button class="btn btn-sm" onclick="Campaigns.changeStatus(${c.id},'cancelled')">Cancel</button>` : ''}
                             <button class="btn btn-sm" onclick="Campaigns.showEdit(${c.id})">Edit</button>
                             <button class="btn btn-sm btn-secondary" onclick="Campaigns.render()">Back</button>
                         </div>
@@ -252,7 +264,7 @@ const Campaigns = {
                         <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Subject</td><td>${App.escapeHtml(c.subject) || '-'}</td></tr>
                         <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Lists</td><td>${lists}</td></tr>
                         <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Tags</td><td>${tags}</td></tr>
-                        <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Content Type</td><td>${c.content_type || '-'}</td></tr>
+                        <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Content Type</td><td>${App.escapeHtml(c.content_type || '-')}</td></tr>
                         <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Created</td><td>${App.formatDateTime(c.created_at)}</td></tr>
                         <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Updated</td><td>${App.formatDateTime(c.updated_at)}</td></tr>
                         <tr><td style="color:var(--text-muted);padding:8px 20px 8px 0">Started</td><td>${App.formatDateTime(c.started_at)}</td></tr>
@@ -294,15 +306,19 @@ const Campaigns = {
     },
 
     async showEdit(id) {
+        const gen = App.beginRender();
         try {
             const [campRes, listsRes] = await Promise.all([
                 API.get(`/api/campaigns/${id}`),
                 API.get('/api/lists?per_page=100&minimal=true'),
             ]);
+            if (!App.isRenderCurrent(gen)) return;
 
             const c = campRes?.data || {};
+            this._editingCampaign = c;
             const allLists = listsRes?.data?.results || [];
             const selectedIds = (c.lists || []).map(l => l.id);
+            const contentType = c.content_type || 'richtext';
 
             let listOptions = allLists.map(l =>
                 `<label class="checkbox-label"><input type="checkbox" name="editCampLists" value="${l.id}" ${selectedIds.includes(l.id) ? 'checked' : ''}><span>${App.escapeHtml(l.name)}</span></label>`
@@ -314,6 +330,15 @@ const Campaigns = {
                     <div class="form-grid">
                         <div class="form-group"><label>Name</label><input type="text" id="editCampName" value="${App.escapeHtml(c.name || '')}"></div>
                         <div class="form-group"><label>Subject</label><input type="text" id="editCampSubject" value="${App.escapeHtml(c.subject || '')}"></div>
+                        <div class="form-group">
+                            <label>Content Type</label>
+                            <select id="editCampContentType">
+                                <option value="richtext" ${contentType === 'richtext' ? 'selected' : ''}>Rich Text / HTML</option>
+                                <option value="html" ${contentType === 'html' ? 'selected' : ''}>Raw HTML</option>
+                                <option value="markdown" ${contentType === 'markdown' ? 'selected' : ''}>Markdown</option>
+                                <option value="plain" ${contentType === 'plain' ? 'selected' : ''}>Plain Text</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Lists</label>
@@ -339,13 +364,38 @@ const Campaigns = {
         const name = document.getElementById('editCampName').value.trim();
         const subject = document.getElementById('editCampSubject').value.trim();
         const body = document.getElementById('editCampBody').value;
+        const contentTypeEl = document.getElementById('editCampContentType');
+        const prev = (this._editingCampaign && this._editingCampaign.id === id) ? this._editingCampaign : {};
+        const contentType = contentTypeEl ? contentTypeEl.value : (prev.content_type || 'richtext');
         const tags = document.getElementById('editCampTags').value.split(',').map(t => t.trim()).filter(Boolean);
         const lists = Array.from(document.querySelectorAll('input[name="editCampLists"]:checked'))
             .map(cb => parseInt(cb.value));
 
+        if (!name || !subject) { App.toast('Name and subject are required', 'error'); return; }
+        if (!lists.length) { App.toast('Select at least one list', 'error'); return; }
+
+        const payload = {
+            name, subject, body, lists, tags,
+            content_type: contentType,
+            type: prev.type || 'regular',
+        };
+        if (prev.template_id) payload.template_id = prev.template_id;
+
         try {
-            await API.put(`/api/campaigns/${id}`, { name, subject, body, lists, tags });
+            await API.put(`/api/campaigns/${id}`, payload);
             App.toast('Campaign updated', 'success');
+            this.showDetail(id);
+        } catch {
+            // API.request already surfaced the server message.
+        }
+    },
+
+    async toggleArchive(id, archive) {
+        const action = archive ? 'publish to the public archive' : 'remove from the public archive';
+        if (!await App.confirm('Archive Campaign', `Are you sure you want to ${action}?`)) return;
+        try {
+            await API.put(`/api/campaigns/${id}/archive`, { archive: Boolean(archive) });
+            App.toast(archive ? 'Campaign archived' : 'Campaign removed from archive', 'success');
             this.showDetail(id);
         } catch {
             // API.request already surfaced the server message.
@@ -371,8 +421,10 @@ const Campaigns = {
     },
 
     async preview(id) {
+        const gen = App.beginRender();
         try {
             const result = await API.get(`/api/campaigns/${id}/preview`);
+            if (!App.isRenderCurrent(gen)) return;
             App.setContent(`
                 <div style="margin-bottom:12px">
                     <button class="btn btn-secondary" onclick="Campaigns.showDetail(${id})">Back to Campaign</button>

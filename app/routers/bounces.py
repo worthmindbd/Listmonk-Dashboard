@@ -7,7 +7,7 @@ from app.services.listmonk_client import listmonk
 from app.services.bounce_ingest import ingest_bounce_mailbox
 from app.services.bounce_list import fetch_all_filtered_bounces, fetch_filtered_bounces_page
 from app.services.bounce_filters import bounce_campaign_id, bounce_campaign_name
-from app.services.export_service import dict_list_to_csv
+from app.services.export_service import dict_list_to_csv, safe_filename_part
 from app.services.hard_bounce_cache import schedule_hard_bounce_update
 
 router = APIRouter()
@@ -32,7 +32,10 @@ async def ingest_bounces():
         return result
     except Exception as e:
         logger.error(f"bounce ingest failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Bounce ingestion failed; see the server log for details.",
+        )
 
 
 @router.get("")
@@ -65,7 +68,7 @@ async def export_bounces(campaign_id: Optional[int] = None, source: str = "",
     if campaign_id:
         suffix += f"_campaign_{campaign_id}"
     if bounce_type:
-        suffix += f"_{bounce_type}"
+        suffix += f"_{safe_filename_part(bounce_type, 'bounces')}"
     return StreamingResponse(
         dict_list_to_csv(all_bounces, columns),
         media_type="text/csv",

@@ -89,6 +89,7 @@ async def fetch_filtered_bounces_page(
     campaign_id: Optional[int] = None,
     source: str = "",
 ) -> dict:
+    bounce_type = (bounce_type or "").strip().lower()
     """Return one page of bounces without loading the full dataset first."""
     needed = page * per_page
     collected: list[dict] = []
@@ -160,10 +161,14 @@ async def fetch_filtered_bounces_page(
     else:
         total = max(lm_total, len(collected))
 
-    if bounce_type == "hard":
+    # The hard-bounce cache counts only campaign-attributed bounces and knows
+    # nothing about a `source` filter. Never let it cap pagination at the
+    # current page: a small/stale cache used to make `renderPagination` hide
+    # every later page (including campaign:null hard bounces).
+    if bounce_type == "hard" and not source and not reached_end:
         cached = estimate_filtered_hard_total(campaign_id)
         if cached is not None:
-            total = max(cached, len(collected))
+            total = max(cached, len(collected), needed + 1)
 
     return {"data": {"results": results, "total": total}}
 
@@ -174,6 +179,7 @@ async def fetch_all_filtered_bounces(
     campaign_id: Optional[int] = None,
     source: str = "",
 ) -> list[dict]:
+    bounce_type = (bounce_type or "").strip().lower()
     """Full filtered list for export/delete — uses bulk path when openers are cached."""
     all_bounces = await client.paginate_all(
         client.get_bounces, per_page=500,

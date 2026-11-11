@@ -187,7 +187,8 @@ class ListMonkClient:
     async def get_campaigns(self, page: int = 1, per_page: int = 50,
                             query: str = "", status: str = "",
                             order_by: str = "created_at", order: str = "DESC",
-                            tag: Optional[list[str]] = None) -> dict:
+                            tag: Optional[list[str]] = None,
+                            no_body: bool = False) -> dict:
         params: dict[str, Any] = {
             "page": page, "per_page": per_page,
             "order_by": order_by, "order": order,
@@ -198,10 +199,15 @@ class ListMonkClient:
             params["status"] = status
         if tag:
             params["tag"] = tag
+        if no_body:
+            # Campaign list/summary/attribution callers only need metadata;
+            # downloading every HTML body is expensive on large histories.
+            params["no_body"] = "true"
         return await self._request("GET", "/api/campaigns", params=params)
 
-    async def get_campaign(self, campaign_id: int) -> dict:
-        return await self._request("GET", f"/api/campaigns/{campaign_id}")
+    async def get_campaign(self, campaign_id: int, no_body: bool = False) -> dict:
+        params = {"no_body": "true"} if no_body else None
+        return await self._request("GET", f"/api/campaigns/{campaign_id}", params=params)
 
     async def create_campaign(self, data: dict) -> dict:
         return await self._request("POST", "/api/campaigns", json=data)
@@ -244,8 +250,13 @@ class ListMonkClient:
         return await self._request("GET", f"/api/campaigns/analytics/{analytics_type}",
                                    params=params)
 
-    async def archive_campaign(self, campaign_id: int) -> dict:
-        return await self._request("PUT", f"/api/campaigns/{campaign_id}/archive")
+    async def archive_campaign(self, campaign_id: int, archive: bool = True) -> dict:
+        # ListMonk binds {archive: bool}; an empty body defaults to false and
+        # silently un-archives (or does nothing) instead of archiving.
+        return await self._request(
+            "PUT", f"/api/campaigns/{campaign_id}/archive",
+            json={"archive": bool(archive)},
+        )
 
     # ── Templates ────────────────────────────────────────────
 
@@ -278,8 +289,12 @@ class ListMonkClient:
             params["campaign_id"] = campaign_id
         if source:
             params["source"] = source
-        if bounce_type:
-            params["bounce_type"] = bounce_type
+        if bounce_type and bounce_type.lower() in ("hard", "soft", "complaint"):
+            # ListMonk's GET filter is called `type` (older versions had no
+            # server-side type filter and simply ignore the unknown param).
+            # "all"/unknown values are filtered client-side; sending them to
+            # ListMonk would select no rows instead of every type.
+            params["type"] = bounce_type.lower()
         return await self._request("GET", "/api/bounces", params=params)
 
     async def delete_bounce(self, bounce_id: int) -> dict:

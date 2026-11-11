@@ -223,11 +223,13 @@ const Unsubscribes = {
         } else {
             html += '<div class="unsub-campaigns-list">';
             filteredGroups.forEach(g => {
-                const readableDate = this.formatCampaignDate(g.campaign_key);
+                const readableDate = App.escapeHtml(this.formatCampaignDate(g.campaign_key));
                 const cleanName = App.escapeHtml(this.cleanCampaignName(g.campaign_name));
                 const cidArg = App.escapeHtml(JSON.stringify(g.campaign_id));
                 html += `
-                    <div class="unsub-campaign-card" onclick="Unsubscribes.openCampaign(${cidArg})">
+                    <div class="unsub-campaign-card" role="button" tabindex="0"
+                         onclick="Unsubscribes.openCampaign(${cidArg})"
+                         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();Unsubscribes.openCampaign(${cidArg});}">
                         <div class="unsub-campaign-header">
                             <div class="unsub-campaign-info">
                                 <span class="badge badge-primary" style="font-size:0.8rem;padding:4px 10px;margin-right:8px">${readableDate}</span>
@@ -311,7 +313,7 @@ const Unsubscribes = {
         const linkCount = data.link_count || 0;
         const emailCount = data.email_count || 0;
         const hasSelected = this.selectedEmails.size > 0;
-        const readableDate = this.formatCampaignDate(camp.campaign_key);
+        const readableDate = App.escapeHtml(this.formatCampaignDate(camp.campaign_key));
         const cleanName = App.escapeHtml(this.cleanCampaignName(camp.campaign_name));
 
         // Top bar actions
@@ -594,6 +596,18 @@ const Unsubscribes = {
         }
     },
 
+    /* ── Background job polling ───────────────────────────── */
+    async _pollJob(statusPath, intervalMs = 2000, maxMs = 30 * 60 * 1000) {
+        const started = Date.now();
+        while (Date.now() - started < maxMs) {
+            const state = await API.get(statusPath);
+            if (state.status === 'finished') return state.result;
+            if (state.status === 'failed') throw new Error(state.error || 'Job failed');
+            await new Promise(resolve => setTimeout(resolve, intervalMs));
+        }
+        throw new Error('Timed out waiting for the background job');
+    },
+
     /* ── Scan ─────────────────────────────────────────────── */
     async triggerScan() {
         const scanBtn = document.getElementById('unsubScanBtn');
@@ -605,41 +619,18 @@ const Unsubscribes = {
                 </svg>
                 Scanning...`;
         }
-        App.toast('Scanning inbox and lists...', 'info');
+        App.toast('Scanning inbox and lists in the background...', 'info');
         try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 60000);
-            const resp = await fetch('/api/unsubscribes/scan', {
-                method: 'POST',
-                signal: controller.signal,
-            });
-            clearTimeout(timeout);
-            if (resp.status === 401) {
-                window.location.href = '/auth/login';
-                return;
-            }
-            if (!resp.ok) {
-                let detail = `Scan failed (HTTP ${resp.status})`;
-                try {
-                    const errBody = await resp.json();
-                    if (errBody?.detail) detail = errBody.detail;
-                } catch { /* non-JSON body */ }
-                App.toast(detail, 'error');
-                return;
-            }
-            const result = await resp.json();
-            const imapData = result.imap || result;
-            const linkData = result.link || {};
+            await API.post('/api/unsubscribes/scan?background=true');
+            const result = await this._pollJob('/api/unsubscribes/scan/status');
+            const imapData = result?.imap || result || {};
+            const linkData = result?.link || {};
             const totalProcessed = (imapData.processed || 0) + (linkData.processed || 0);
             const msg = `Scanned ${imapData.scanned || 0} emails + ${linkData.scanned_lists || 0} lists — ${totalProcessed} unsubscribed`;
             App.toast(msg, totalProcessed > 0 ? 'success' : 'info');
-            await this.render();
+            if (App.currentPage === 'unsubscribes') await this.render();
         } catch (err) {
-            if (err.name === 'AbortError') {
-                App.toast('Scan timed out — try again later', 'error');
-            } else {
-                App.toast(`Scan failed: ${err.message || 'Unknown error'}`, 'error');
-            }
+            if (!err?.handled) App.toast(`Scan failed: ${err?.message || 'Unknown error'}`, 'error');
         } finally {
             if (scanBtn) {
                 scanBtn.disabled = false;
@@ -679,13 +670,16 @@ const Unsubscribes = {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px;animation:spin 1s linear infinite"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
                 Resetting...`;
         }
-        App.toast('Resetting all unsubscribes...', 'info');
+        App.toast('Resetting all unsubscribes in the background...', 'info');
         try {
-            const result = await API.post('/api/unsubscribes/reset');
-            App.toast(result.message || 'Reset complete', (result.failed || 0) > 0 ? 'warning' : 'success');
-            await this.render();
-        } catch {
-            // API.request already surfaced the server message.
+            const started = await API.post('/api/unsubscribes/reset?background=true');
+            const result = (started?.status === 'started' || started?.status === 'running')
+                ? await this._pollJob('/api/unsubscribes/reset/status')
+                : started;  // no records to reset
+            App.toast(result?.message || 'Reset complete', (result?.failed || 0) > 0 ? 'warning' : 'success');
+            if (App.currentPage === 'unsubscribes') await this.render();
+        } catch (err) {
+            if (!err?.handled) App.toast(`Reset failed: ${err?.message || 'Unknown error'}`, 'error');
         } finally {
             if (undoBtn) {
                 undoBtn.disabled = false;

@@ -42,12 +42,16 @@ const App = {
             document.getElementById('sidebar').classList.remove('open');
         });
 
-        // Clicking the active unsubscribes link resets to the campaign list view
+        // Clicking the active nav link returns from any sub-view (detail/edit/create)
         document.querySelectorAll('.nav-link').forEach(link => {
-            link.addEventListener('click', () => {
-                if (link.dataset.page === 'unsubscribes' && App.currentPage === 'unsubscribes') {
-                    if (typeof Unsubscribes !== 'undefined' && Unsubscribes.activeCampaign) {
+            link.addEventListener('click', (e) => {
+                if (link.dataset.page === App.currentPage) {
+                    if (link.dataset.page === 'unsubscribes' && typeof Unsubscribes !== 'undefined' && Unsubscribes.activeCampaign) {
+                        e.preventDefault();
                         Unsubscribes.backToList();
+                    } else if (window.location.hash === `#/${link.dataset.page}`) {
+                        e.preventDefault();
+                        this.route();
                     }
                 }
             });
@@ -91,6 +95,13 @@ const App = {
             Unsubscribes.campaignSearchQuery = '';
             Unsubscribes.campaignSourceFilter = '';
             Unsubscribes.campaignFilterQuery = '';
+        }
+        if (hash !== 'subscribers' && typeof Subscribers !== 'undefined') {
+            Subscribers.lists = [];
+        }
+        if (hash !== 'settings' && typeof Settings !== 'undefined' && Settings._refreshInterval) {
+            clearInterval(Settings._refreshInterval);
+            Settings._refreshInterval = null;
         }
 
         // Update nav
@@ -374,7 +385,7 @@ const Templates = {
                 html += `<tr>
                     <td>${t.id}</td>
                     <td><strong>${name}</strong></td>
-                    <td><span class="badge badge-info">${t.type || '-'}</span></td>
+                    <td><span class="badge badge-info">${App.escapeHtml(t.type || '-')}</span></td>
                     <td>${t.is_default ? '<span class="badge badge-success">Default</span>' : '-'}</td>
                     <td>${App.formatDate(t.created_at)}</td>
                     <td>${App.formatDate(t.updated_at)}</td>
@@ -514,7 +525,7 @@ const Bounces = {
         const gen = App.beginRender();
         try {
             const fetchCampaigns = !this.campaigns.length
-                ? API.get('/api/campaigns?per_page=500&order_by=created_at&order=DESC')
+                ? API.get('/api/campaigns?per_page=500&order_by=created_at&order=DESC&no_body=true')
                 : Promise.resolve(null);
 
             const [campRes, bounceRes] = await Promise.all([
@@ -528,6 +539,11 @@ const Bounces = {
             const pageBounces = data.results || [];
             const total = data.total || 0;
             this.total = total;
+            const maxPage = Math.max(1, Math.ceil(total / this.perPage));
+            if (this.page > maxPage) {
+                this.page = maxPage;
+                return this.render();
+            }
 
             // Build campaign filter options
             const campOptions = this.campaigns.map(c =>
@@ -580,7 +596,7 @@ const Bounces = {
                     <td><strong>${App.escapeHtml(b.email || '-')}</strong></td>
                     <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis">${campName}</td>
                     <td>${App.escapeHtml(b.source || '-')}</td>
-                    <td><span class="badge badge-${b.type === 'hard' ? 'danger' : 'warning'}">${b.type || 'unknown'}</span></td>
+                    <td><span class="badge badge-${b.type === 'hard' ? 'danger' : 'warning'}">${App.escapeHtml(b.type || 'unknown')}</span></td>
                     <td>${App.formatDate(b.created_at)}</td>
                     <td class="cell-actions"><button class="btn btn-sm btn-danger" onclick="Bounces.remove(${b.id})">Delete</button></td>
                 </tr>`;

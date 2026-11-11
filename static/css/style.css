@@ -875,7 +875,8 @@ td .action-btns {
 }
 
 .btn-success {
-    background: linear-gradient(135deg, var(--emerald) 0%, #059669 100%);
+    /* Darkened so white label text clears WCAG AA (was 2.54:1 at #10b981). */
+    background: linear-gradient(135deg, #047857 0%, #065f46 100%);
     border-color: transparent;
     color: #ffffff;
     box-shadow: 0 4px 16px var(--emerald-glow);
@@ -1042,8 +1043,30 @@ code {
     user-select: none;
 }
 
+.checkbox-label {
+    position: relative;
+}
+
+/* Visually hidden but still focusable/toggleable with the keyboard.
+   display:none removed these inputs from the tab order, making required
+   campaign-list/scheduler/import choices unreachable without a mouse. */
 .checkbox-label input[type="checkbox"] {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    opacity: 0;
+}
+
+.checkbox-label:focus-within {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
 }
 
 .checkbox-label span {
@@ -1069,8 +1092,8 @@ code {
 
 /* Specific styling for active scheduler toggle */
 .checkbox-label.toggle-on {
-    border-color: var(--emerald) !important;
-    background: linear-gradient(135deg, var(--emerald) 0%, #059669 100%) !important;
+    border-color: #047857 !important;
+    background: linear-gradient(135deg, #047857 0%, #065f46 100%) !important;
     color: #ffffff !important;
     box-shadow: 0 2px 12px var(--emerald-glow) !important;
 }
@@ -1322,10 +1345,16 @@ td .action-btns {
 }
 
 .unsub-campaign-card {
+    cursor: pointer;
     background: var(--bg-surface);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.unsub-campaign-card:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
 }
 
 .unsub-campaign-card:hover {
@@ -1686,7 +1715,7 @@ td .action-btns {
 }
 
 .toast-success {
-    background: rgba(16, 185, 129, 0.9);
+    background: #047857;
     color: #ffffff;
     border-color: rgba(255, 255, 255, 0.2);
 }
@@ -1908,4 +1937,21 @@ td .action-btns {
         font-size: 0.65rem;
         padding: 2px 7px;
     }
+}
+
+
+/* ── Keyboard focus visibility ─────────────────────────────── */
+.theme-switch:focus-within,
+.toggle-switch:focus-within {
+    outline: 2px solid var(--primary);
+    outline-offset: 3px;
+    border-radius: var(--radius-pill);
+}
+
+a:focus-visible,
+button:focus-visible,
+.file-drop-zone:focus-visible,
+[role="button"]:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
 }

@@ -12,10 +12,10 @@ import asyncio
 import json
 import logging
 from datetime import datetime, time
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app.config import settings
+from app.services.campaign_attribution import parse_listmonk_dt
 from app.services.listmonk_client import ListMonkClient
 
 logger = logging.getLogger("campaign_scheduler")
@@ -32,6 +32,9 @@ DEFAULT_SCHEDULE = {
     "end_minute": 0,
     "days": ["mon", "tue", "wed", "thu", "fri"],
     "auto_paused_campaigns": [],
+    # campaign id -> the campaign's updated_at immediately after we paused it.
+    # A later timestamp means a human paused/changed it; we must not resume.
+    "auto_paused_updated_at": {},
 }
 
 
@@ -148,7 +151,33 @@ async def run_scheduler_tick(client: ListMonkClient):
             return
 
         in_window = is_within_send_window(schedule)
-        auto_paused = set(schedule.get("auto_paused_campaigns", []))
+        auto_paused: set[int] = set()
+        for raw_cid in schedule.get("auto_paused_campaigns", []):
+            try:
+                auto_paused.add(int(raw_cid))
+            except (TypeError, ValueError):
+                continue
+        # JSON object keys are strings; campaign ids are ints.
+        auto_paused_meta: dict[int, object] = {}
+        for raw_cid, updated_at in (schedule.get("auto_paused_updated_at") or {}).items():
+            try:
+                auto_paused_meta[int(raw_cid)] = updated_at
+            except (TypeError, ValueError):
+                continue
+
+        def persist_auto_paused() -> None:
+            """Persist auto-pause ownership immediately, not only at tick end.
+
+            A pause must never be durable without its bookkeeping: a crash or
+            save error after pausing used to leave a campaign paused forever
+            with no record that the scheduler should resume it.
+            """
+            schedule["auto_paused_campaigns"] = sorted(auto_paused)
+            schedule["auto_paused_updated_at"] = {
+                str(cid): ts for cid, ts in auto_paused_meta.items()
+                if cid in auto_paused
+            }
+            save_schedule(schedule)
 
         tz = ZoneInfo(schedule["timezone"])
         now = datetime.now(tz)
@@ -163,6 +192,7 @@ async def run_scheduler_tick(client: ListMonkClient):
                 campaigns.extend(
                     await client.paginate_all(
                         client.get_campaigns, per_page=100, status=status,
+                        no_body=True,
                     )
                 )
 
@@ -173,21 +203,78 @@ async def run_scheduler_tick(client: ListMonkClient):
                 status = camp["status"]
 
                 if not in_window and status == "running":
-                    # Outside send window -> pause it
+                    # Record ownership *before* pausing. If the process dies
+                    # between the pause and the next save, the next tick sees
+                    # a running campaign in the set and cleans it up.
+                    auto_paused.add(cid)
+                    auto_paused_meta.pop(cid, None)
                     try:
-                        await client.change_campaign_status(cid, "paused")
-                        auto_paused.add(cid)
+                        persist_auto_paused()
+                    except OSError as e:
+                        auto_paused.discard(cid)
+                        logger.error(
+                            f"Not pausing campaign #{cid}: could not persist "
+                            f"auto_paused state: {e}"
+                        )
+                        continue
+                    try:
+                        result = await client.change_campaign_status(cid, "paused")
+                    except Exception as e:
+                        auto_paused.discard(cid)
+                        auto_paused_meta.pop(cid, None)
+                        try:
+                            persist_auto_paused()
+                        except OSError:
+                            logger.exception("Could not persist auto-pause rollback")
+                        logger.error(f"Failed to pause campaign #{cid}: {e}")
+                    else:
+                        updated_at = ((result or {}).get("data") or {}).get("updated_at")
+                        auto_paused_meta[cid] = updated_at
+                        try:
+                            persist_auto_paused()
+                        except OSError as e:
+                            # The pause succeeded; keeping ownership in memory
+                            # (the pre-pause save already stored the id) lets a
+                            # later tick resume it instead of stranding it.
+                            logger.error(
+                                f"Campaign #{cid} paused, but ownership metadata "
+                                f"could not be saved: {e}"
+                            )
                         camp["status"] = "paused"
                         changed = True
                         logger.info(f"Auto-PAUSED campaign #{cid} '{camp['name']}' (outside {schedule['start_hour']:02d}:{schedule['start_minute']:02d}-{schedule['end_hour']:02d}:{schedule['end_minute']:02d} {schedule['timezone']})")
-                    except Exception as e:
-                        logger.error(f"Failed to pause campaign #{cid}: {e}")
 
                 elif in_window and status == "paused" and cid in auto_paused:
+                    # If updated_at changed after we auto-paused it, a human
+                    # paused/changed the campaign; respect that and stop
+                    # tracking it instead of resuming.
+                    known_updated = auto_paused_meta.get(cid)
+                    current_updated = camp.get("updated_at")
+                    known_dt = parse_listmonk_dt(known_updated)
+                    current_dt = parse_listmonk_dt(current_updated)
+                    manually_changed = (
+                        known_dt is not None and current_dt is not None
+                        and (current_dt - known_dt).total_seconds() > 5
+                    )
+                    if manually_changed:
+                        auto_paused.discard(cid)
+                        auto_paused_meta.pop(cid, None)
+                        changed = True
+                        try:
+                            persist_auto_paused()
+                        except OSError:
+                            logger.exception("Could not persist manual-pause cleanup")
+                        logger.info(
+                            f"Campaign #{cid} changed while auto-paused; "
+                            "leaving it paused (manual pause wins)"
+                        )
+                        continue
                     # Inside send window + was auto-paused -> resume it
                     try:
                         await client.change_campaign_status(cid, "running")
                         auto_paused.discard(cid)
+                        auto_paused_meta.pop(cid, None)
+                        persist_auto_paused()
                         camp["status"] = "running"
                         changed = True
                         logger.info(f"Auto-RESUMED campaign #{cid} '{camp['name']}' (inside send window)")
@@ -196,15 +283,21 @@ async def run_scheduler_tick(client: ListMonkClient):
 
             # Clean up auto_paused list: remove any that are no longer paused or no longer exist
             camp_map = {c["id"]: c for c in campaigns}
+            cleanup_changed = False
             for cid in list(auto_paused):
                 camp = camp_map.get(cid)
                 if not camp or camp["status"] != "paused":
                     auto_paused.discard(cid)
+                    auto_paused_meta.pop(cid, None)
                     changed = True
+                    cleanup_changed = True
 
-            if changed:
-                schedule["auto_paused_campaigns"] = list(auto_paused)
-                save_schedule(schedule)
+            if cleanup_changed:
+                persist_auto_paused()
+            elif changed:
+                # Backward-compatible schedules may lack the new ownership
+                # map; make sure the list is saved even if no call above did.
+                persist_auto_paused()
 
         except Exception as e:
             logger.error(f"Scheduler tick error: {e}")

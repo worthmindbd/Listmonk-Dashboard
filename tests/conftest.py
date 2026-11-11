@@ -14,7 +14,7 @@ import pytest
 def _reset_module_caches(tmp_path, monkeypatch):
     from app import auth
     from app.auth import _login_failures
-    from app.routers import campaigns
+    from app.routers import campaigns, unsubscribes
     from app.services import (
         bounce_ingest, hard_bounce_cache, imap_unsubscribe, link_unsubscribe, opener_cache,
     )
@@ -36,6 +36,9 @@ def _reset_module_caches(tmp_path, monkeypatch):
         campaigns.invalidate_summary_cache()
         # Poison-message retry counters for bounce ingestion.
         bounce_ingest._message_failures.clear()
+        # Background reset/scan job state.
+        unsubscribes._reset_job = None
+        unsubscribes._scan_job = None
         # Login rate-limit buckets — a failed-login test must not rate-limit
         # later tests for the same IP.
         _login_failures.clear()

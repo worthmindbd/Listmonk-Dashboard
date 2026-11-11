@@ -41,7 +41,7 @@ const Converter = {
         return `
             <div class="card">
                 <div class="card-header"><h3 class="card-title">Upload CSV File</h3></div>
-                <div class="file-drop-zone" id="dropZone">
+                <div class="file-drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Upload a CSV file">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
                         <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
@@ -142,6 +142,12 @@ const Converter = {
 
             if (dropZone && fileInput) {
                 dropZone.addEventListener('click', () => fileInput.click());
+                dropZone.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        fileInput.click();
+                    }
+                });
 
                 dropZone.addEventListener('dragover', (e) => {
                     e.preventDefault();
@@ -171,6 +177,7 @@ const Converter = {
 
     // ── Handle File Upload ───────────────────────────────
     async handleFile(file) {
+        const gen = App.beginRender();
         this.fileName = file.name;
         document.getElementById('fileName').textContent = file.name;
 
@@ -182,6 +189,7 @@ const Converter = {
 
         try {
             const result = await API.upload('/api/converter/detect-columns', formData);
+            if (!App.isRenderCurrent(gen)) return;
             this.columns = result.columns || [];
             this.sampleRows = result.sample_rows || [];
 
@@ -269,6 +277,8 @@ const Converter = {
     // ── Import Dialog ────────────────────────────────────
     async showImportDialog() {
         const dialog = document.getElementById('importDialog');
+        if (!dialog) return;
+        const gen = App.beginRender();
 
         // Fetch lists
         let lists = [];
@@ -276,6 +286,7 @@ const Converter = {
             const res = await API.get('/api/lists?per_page=100&minimal=true');
             lists = res?.data?.results || [];
         } catch {}
+        if (!App.isRenderCurrent(gen) || !dialog.isConnected) return;
 
         let listOptions = lists.map(l =>
             `<label class="checkbox-label"><input type="checkbox" name="importLists" value="${l.id}"><span>${App.escapeHtml(l.name)}</span></label>`

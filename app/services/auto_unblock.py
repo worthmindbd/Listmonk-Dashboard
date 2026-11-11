@@ -4,7 +4,10 @@ but were blocklisted BY A BOUNCE, and re-enables them + deletes their bounce
 records.
 
 Logic: If a subscriber clicked or opened, their address demonstrably works,
-so a bounce-driven blocklist is a false positive.
+so a bounce-driven blocklist is a false positive. Because ListMonk's
+blocklisting also marks every list subscription "unsubscribed", the
+subscriber is re-added to those lists as well — otherwise "unblocking" would
+leave them enabled but unable to receive anything.
 
 Deliberate blocklists are never reversed. Engagement alone used to qualify,
 which re-enabled (every 6 hours) people who were blocklisted because they
@@ -20,8 +23,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from app.services.listmonk_client import ListMonkClient, listmonk as listmonk_singleton
-from app.config import settings
-from app.services.task_utils import spawn
+from app.services.campaign_attribution import parse_listmonk_dt
 from app.services.unsubscribe_log import load_log, load_processed_map_all
 
 logger = logging.getLogger("auto_unblock")
@@ -149,13 +151,49 @@ async def _unblock_subscribers_impl(client: ListMonkClient, subscribers: list[di
     # Step 1: Re-enable all subscribers (bounded parallel)
     async def _enable(s: dict) -> None:
         nonlocal success, failed
+        subscriber_updated = parse_listmonk_dt(s.get("updated_at"))
+        all_list_ids = []
+        resubscribe_ids = []
+        for lst in (s.get("lists") or []):
+            if not isinstance(lst, dict) or not lst.get("id"):
+                continue
+            all_list_ids.append(lst["id"])
+            # ListMonk's blocklist sets both subscribers.updated_at and every
+            # subscription_updated_at to the same transaction time. If a
+            # subscription was updated well before that, it was an earlier
+            # deliberate unsubscribe; re-adding it would reverse real consent.
+            sub_list_updated = parse_listmonk_dt(lst.get("subscription_updated_at"))
+            if (subscriber_updated and sub_list_updated
+                    and (subscriber_updated - sub_list_updated).total_seconds() > 5):
+                logger.info(
+                    f"Not re-subscribing {s['email']} to list {lst['id']}: "
+                    "unsubscribed before the bounce blocklist"
+                )
+                continue
+            resubscribe_ids.append(lst["id"])
         async with sem:
             try:
+                # ListMonk blocklisting marks every list subscription as
+                # "unsubscribed". Re-enabling the subscriber alone does not
+                # restore those rows (the update SQL deliberately preserves
+                # an existing unsubscribed status), so the contact would stay
+                # enabled but receive nothing. Add the subscriptions back
+                # first, exactly like the unsubscribe "Undo" flow does.
+                if resubscribe_ids:
+                    await client.modify_list_memberships({
+                        "ids": [s["id"]],
+                        "action": "add",
+                        "target_list_ids": resubscribe_ids,
+                        "status": "confirmed",
+                    })
                 await client.update_subscriber(s["id"], {
                     "email": s["email"],
                     "name": s.get("name") or "",
                     "status": "enabled",
-                    "lists": [l["id"] for l in (s.get("lists") or [])],
+                    # Keep every existing membership in the PUT; omitted IDs
+                    # would be deleted by ListMonk. Only resubscribe_ids are
+                    # re-confirmed above.
+                    "lists": all_list_ids,
                     "attribs": s.get("attribs") or {},
                 })
                 success += 1

@@ -41,6 +41,15 @@ async def _fetch_opener_emails(client: ListMonkClient, campaign_id: int) -> set[
     return emails
 
 
+def _sweep_expired() -> None:
+    """Evict TTL-expired campaigns even if they are never queried again."""
+    now = time.monotonic()
+    for cid, fetched_at in list(_fetched_at.items()):
+        if now - fetched_at >= TTL_SECONDS:
+            _cache.pop(cid, None)
+            _fetched_at.pop(cid, None)
+
+
 async def get_opener_emails(
     client: ListMonkClient, campaign_id: int, *, force_refresh: bool = False,
 ) -> set[str]:
@@ -55,6 +64,7 @@ async def get_opener_emails(
     every other caller sharing it — including background loops whose
     ``except Exception`` cannot catch it, killing the loop for good.
     """
+    _sweep_expired()
     if not force_refresh and is_cached(campaign_id):
         return _cache[campaign_id]
 
@@ -86,6 +96,7 @@ async def get_opener_emails_for_campaigns(
     """Fetch opener sets for many campaigns with bounded concurrency."""
     if not campaign_ids:
         return {}
+    _sweep_expired()
     sem = asyncio.Semaphore(concurrency)
 
     async def fetch(cid: int) -> tuple[int, set[str]]:

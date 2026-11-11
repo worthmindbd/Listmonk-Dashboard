@@ -16,6 +16,15 @@ from typing import Optional
 # or cp1252 files (curly quotes, em-dashes) always mojibake as latin-1.
 ENCODINGS = ["utf-8-sig", "utf-8", "cp1252", "latin-1"]
 
+# Excel "Unicode" exports are UTF-16 (usually LE) with a BOM. Without this,
+# cp1252 "successfully" decodes them into NUL-laden garbage headers.
+_BOMS = (
+    (b"\xff\xfe\x00\x00", "utf-32"),
+    (b"\x00\x00\xfe\xff", "utf-32"),
+    (b"\xff\xfe", "utf-16"),
+    (b"\xfe\xff", "utf-16"),
+)
+
 
 def _count_csv_rows(text: str, dialect) -> int:
     """Count data rows in a CSV string, handling embedded newlines in quoted fields."""
@@ -33,6 +42,9 @@ def _count_csv_rows(text: str, dialect) -> int:
 
 def detect_encoding(file_bytes: bytes) -> str:
     """Try multiple encodings until one works for the entire content."""
+    for bom, enc in _BOMS:
+        if file_bytes.startswith(bom):
+            return enc
     for enc in ENCODINGS:
         try:
             file_bytes.decode(enc)

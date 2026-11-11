@@ -26,7 +26,7 @@ const Dashboard = {
             // Fetch all data in parallel
             const [listsRes, campaignsRes, subscribersRes, summaryRes] = await Promise.allSettled([
                 API.get('/api/lists?per_page=1&minimal=true'),
-                API.get('/api/campaigns?per_page=10&order_by=created_at&order=DESC'),
+                API.get('/api/campaigns?per_page=10&order_by=created_at&order=DESC&no_body=true'),
                 API.get('/api/subscribers?per_page=1'),
                 API.get('/api/campaigns/summary'),
             ]);
@@ -143,7 +143,7 @@ const Dashboard = {
         const theme = this.getThemeColors();
         const recent = (campaigns || this.campaignsData).slice(0, 8).reverse();
         const labels = recent.map(c => c.name?.substring(0, 20) || 'Untitled');
-        const sent = recent.map(c => c.to_send || 0);
+        const sent = recent.map(c => c.sent || 0);
         const views = recent.map(c => c.views || 0);
         const clicks = recent.map(c => c.clicks || 0);
 

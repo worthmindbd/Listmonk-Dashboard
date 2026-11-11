@@ -21,6 +21,27 @@ def safe_email_for_query(email_addr: str) -> str | None:
     return email_addr.replace("'", "''")
 
 
+def subscriber_search_query(term: str) -> str:
+    """Build a safe ListMonk ``query`` expression for a free-text search.
+
+    ``GET /api/subscribers`` treats its ``query`` parameter as a raw SQL
+    WHERE expression, so passing the search box text through unchanged made
+    every ordinary search fail with a 400/403.  ``strpos`` avoids LIKE
+    wildcards and only the SQL string literal needs escaping.
+    """
+    term = (term or "").strip()
+    if not term:
+        return ""
+    # Escape the quote and the backslash: the latter matters if the server
+    # runs with standard_conforming_strings=off (backslash would otherwise
+    # escape the doubled quote).
+    escaped = term.replace("\\", "\\\\").replace("'", "''").replace("\x00", "")
+    return (
+        f"(strpos(lower(subscribers.email), lower('{escaped}')) > 0 "
+        f"OR strpos(lower(COALESCE(subscribers.name, '')), lower('{escaped}')) > 0)"
+    )
+
+
 def extract_sender_address(from_header: str) -> Optional[str]:
     """Return the lowercased mailbox address from a From header, or None.
 

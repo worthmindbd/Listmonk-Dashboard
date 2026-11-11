@@ -67,10 +67,12 @@ def _backup_corrupt_file(file_path: Path) -> None:
         logger.error("Corrupt JSON state file %s could not be moved aside", file_path)
 
 
-def _normalize_campaign_key(key: str) -> str:
+def _normalize_campaign_key(key) -> str:
     """Convert old MM/YY keys to YYYY-MM format for proper sorting."""
-    if not key or '/' not in key:
-        return key
+    if not isinstance(key, str) or not key or '/' not in key:
+        # A corrupted/hand-edited record must not raise TypeError (``'/' in 5``)
+        # and take down every unsubscribe endpoint.
+        return key if isinstance(key, str) else ""
     parts = key.split('/')
     if len(parts) == 2 and len(parts[0]) == 2 and len(parts[1]) == 2:
         month, year_short = parts
@@ -106,6 +108,17 @@ def load_log() -> list[dict]:
         records = [r for r in raw if isinstance(r, dict)]
         migrated = False
         for r in records:
+            # A hand-edited/corrupt field type must not crash sorting,
+            # grouping, or the scanners (``(5 or "").lower()``).
+            for field in ("email", "name", "campaign_name", "keyword",
+                          "subject", "source", "timestamp"):
+                value = r.get(field)
+                if value is not None and not isinstance(value, str):
+                    r[field] = str(value)
+                    migrated = True
+            if "lists_removed" in r and not isinstance(r["lists_removed"], list):
+                r["lists_removed"] = []
+                migrated = True
             old_key = r.get("campaign_key", "")
             new_key = _normalize_campaign_key(old_key)
             if new_key != old_key:
@@ -114,7 +127,7 @@ def load_log() -> list[dict]:
         if migrated or len(records) != len(raw):
             save_log(records)
         return records
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         # A corrupt file must never silently become "empty history": move the
         # bytes aside and start clean so the next save cannot overwrite them.
         _backup_corrupt_file(LOG_FILE)
@@ -125,6 +138,15 @@ def load_log() -> list[dict]:
 
 def save_log(records: list[dict]) -> None:
     _atomic_write_json(LOG_FILE, records, indent=2, ensure_ascii=False)
+
+
+async def aload_log() -> list[dict]:
+    """Async wrapper so large JSON logs do not block the event loop."""
+    return await asyncio.to_thread(load_log)
+
+
+async def asave_log(records: list[dict]) -> None:
+    await asyncio.to_thread(save_log, records)
 
 
 async def append_log(new_records: list[dict]) -> None:
@@ -150,10 +172,21 @@ def _load_processed_map() -> dict[str, float]:
     """
     try:
         data = json.loads(PROCESSED_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         _backup_corrupt_file(PROCESSED_FILE)
         data = None
     except (FileNotFoundError, IsADirectoryError, PermissionError):
+        data = None
+
+    if data is not None and not isinstance(data, (dict, list)):
+        # Valid JSON of the wrong shape is still unusable; preserve it and
+        # seed from the display log instead of silently forgetting history.
+        _backup_corrupt_file(PROCESSED_FILE)
+        data = None
+    elif isinstance(data, dict) and not isinstance(data.get("processed"), dict):
+        # ``{}`` / ``{"processed": []}`` are valid JSON but hold no usable
+        # map. Treat them like corruption so history is re-seeded, not lost.
+        _backup_corrupt_file(PROCESSED_FILE)
         data = None
 
     result: dict[str, float] = {}
@@ -245,15 +278,36 @@ async def unmark_processed(emails) -> None:
 def load_settings() -> dict:
     try:
         data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        return {**_DEFAULT_SETTINGS, **data}
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         # Corrupt settings must not be silently overwritten on the next save.
         _backup_corrupt_file(SETTINGS_FILE)
         return dict(_DEFAULT_SETTINGS)
     except (FileNotFoundError, IsADirectoryError, PermissionError):
         return dict(_DEFAULT_SETTINGS)
+    if not isinstance(data, dict):
+        # ``{**data}`` on a list/string raises TypeError and would break every
+        # scan (load_settings is called at scan start).
+        _backup_corrupt_file(SETTINGS_FILE)
+        return dict(_DEFAULT_SETTINGS)
+    return {**_DEFAULT_SETTINGS, **data}
 
 
 def save_settings(data: dict) -> None:
     merged = {**load_settings(), **data}
     _atomic_write_json(SETTINGS_FILE, merged, indent=2, ensure_ascii=True)
+
+
+async def aload_settings() -> dict:
+    """Async settings reader: runs disk I/O in a worker thread under ``_log_lock``."""
+    async with _log_lock:
+        return await asyncio.to_thread(load_settings)
+
+
+async def asave_settings(data: dict) -> dict:
+    """Async atomic settings read-modify-write under ``_log_lock``."""
+    async with _log_lock:
+        def _write() -> dict:
+            merged = {**load_settings(), **data}
+            _atomic_write_json(SETTINGS_FILE, merged, indent=2, ensure_ascii=True)
+            return merged
+        return await asyncio.to_thread(_write)

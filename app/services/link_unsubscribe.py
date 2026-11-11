@@ -116,6 +116,41 @@ def _unsubscribed_again_since(sub: dict, unsub_list_ids: set, handled_at: float)
     return False
 
 
+def _trigger_list_ids(sub: dict, unsub_list_ids: set, handled_at) -> set:
+    """List IDs whose unsubscribe is what triggered this scan.
+
+    A subscriber can stay "unsubscribed" on lists they left months ago while
+    a fresh unsubscribe happens on another list. Attributing the new event
+    against the old lists can pick a campaign they never received, so for
+    already-handled subscribers only lists updated after the handled-at time
+    are eligible. For a first-seen subscriber, the cascade performed by the
+    unsubscribe form updates all affected lists together; keep that group.
+    """
+    entries: list[tuple[int, float]] = []
+    for lst in sub.get("lists") or []:
+        if not isinstance(lst, dict) or lst.get("id") not in unsub_list_ids:
+            continue
+        if (lst.get("subscription_status") or "unsubscribed") != "unsubscribed":
+            continue
+        updated = parse_listmonk_dt(lst.get("subscription_updated_at"))
+        stamp = updated.timestamp() if updated else 0.0
+        if handled_at is not None:
+            if updated and stamp > handled_at + RESUBSCRIBE_SLACK_SECONDS:
+                entries.append((lst["id"], stamp))
+        else:
+            entries.append((lst["id"], stamp))
+
+    if handled_at is not None:
+        return {lid for lid, _ in entries}
+    if not entries:
+        return set()
+    newest = max(stamp for _, stamp in entries)
+    if newest <= 0:
+        return {lid for lid, _ in entries}
+    cutoff = newest - RESUBSCRIBE_SLACK_SECONDS
+    return {lid for lid, stamp in entries if stamp >= cutoff}
+
+
 def _current_campaign_key() -> str:
     now = datetime.now(timezone.utc)
     return f"{now.year}-{now.month:02d}"
@@ -152,12 +187,18 @@ async def _fetch_campaign_history(client: ListMonkClient) -> list[dict]:
     while page <= MAX_CAMPAIGN_PAGES:
         result = await client.get_campaigns(
             page=page, per_page=CAMPAIGN_PAGE_SIZE,
-            order_by="created_at", order="DESC",
+            order_by="created_at", order="DESC", no_body=True,
         )
-        results = result.get("data", {}).get("results", [])
+        data = result.get("data", {}) if isinstance(result, dict) else {}
+        results = data.get("results", [])
         if not results:
             break
         campaigns.extend(results)
+        total = data.get("total", 0)
+        if total and len(campaigns) >= total:
+            break
+        if len(results) < CAMPAIGN_PAGE_SIZE:
+            break
         page += 1
     else:
         logger.warning(
@@ -168,9 +209,13 @@ async def _fetch_campaign_history(client: ListMonkClient) -> list[dict]:
     if campaigns:
         # _pick_campaign_for_list_ids relies on newest-first ordering to pick the
         # most recent match, and trusts the caller to have supplied it. Sort
-        # explicitly so attribution cannot silently invert if the API's ordering
-        # changes or a future caller forgets the DESC parameter.
-        campaigns.sort(key=lambda c: _campaign_dt(c) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        # explicitly by send date (started_at falling back to created_at) so
+        # attribution cannot silently invert if the API's ordering changes or a
+        # campaign was drafted earlier than one it was sent after.
+        campaigns.sort(
+            key=lambda c: campaign_sent_at(c) or _campaign_dt(c) or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
         _campaign_history = campaigns
         _campaign_history_at = time.monotonic()
     return campaigns
@@ -215,9 +260,9 @@ async def _scan_link_unsubscribes_impl(client: ListMonkClient) -> dict:
     # the link scanner decides "new request?" from ListMonk's own timestamps
     # (see _unsubscribed_again_since), so an expired entry must not make it
     # re-log and re-attribute everyone who unsubscribed long ago.
-    processed_map = load_processed_map_all()
+    processed_map = await asyncio.to_thread(load_processed_map_all)
 
-    scan_settings = load_settings()
+    scan_settings = await asyncio.to_thread(load_settings)
     blocklist_enabled = scan_settings.get("blocklist_enabled", False)
 
     try:
@@ -267,7 +312,8 @@ async def _scan_link_unsubscribes_impl(client: ListMonkClient) -> dict:
             if page >= MAX_PAGES_PER_LIST:
                 logger.warning(
                     f"[LINK] Pagination cap reached for list {list_id}; "
-                    f"remaining subscribers will be picked up next scan"
+                    f"subscribers after page {MAX_PAGES_PER_LIST} were not "
+                    "scanned (raise MAX_PAGES_PER_LIST for larger lists)"
                 )
                 break
             page += 1
@@ -325,7 +371,11 @@ async def _scan_link_unsubscribes_impl(client: ListMonkClient) -> dict:
                 logger.error(f"Failed to blocklist {email}: {e}")
                 # Partial success — still log the unsubscribe
 
-        campaign = _pick_campaign_for_list_ids(campaigns, unsub_list_ids)
+        trigger_ids = _trigger_list_ids(sub, unsub_list_ids, handled_at)
+        if not trigger_ids and handled_at is None:
+            # Older ListMonk responses may omit subscription_updated_at.
+            trigger_ids = set(unsub_list_ids)
+        campaign = _pick_campaign_for_list_ids(campaigns, trigger_ids)
         primary_list_id = campaign.get("matched_list_id")
         list_name = list_id_to_name.get(primary_list_id, "")
 

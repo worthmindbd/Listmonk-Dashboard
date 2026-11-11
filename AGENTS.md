@@ -47,12 +47,12 @@ Listmonk-Dashboard/
 │   │   ├── analytics.js           # Campaign analytics charts, date filtering, link tracking
 │   │   ├── api.js                 # Centralized fetch wrapper with 401 redirect & error handling
 │   │   ├── app.js                 # SPA router, notifications, navigation, bounces view & shared UI
-│   │   ├── campaigns.js           # Campaign management, status transitions, test email sending
+│   │   ├── campaigns.js           # Campaign management, status transitions, archive, details
 │   │   ├── charts.js              # Dashboard overview charts & stat summary cards
 │   │   ├── converter.js           # CSV converter UI, column mapping, live preview & import modal
 │   │   ├── lists.js               # List management, modal forms, tag pills
 │   │   ├── settings.js            # Settings UI: send window scheduler, auto-unblock, unsubscribe settings
-│   │   ├── subscribers.js         # Subscriber table, search, edit modal, bulk blocklist/delete
+│   │   ├── subscribers.js         # Subscriber table, search, list filter, edit modal
 │   │   └── unsubscribes.js        # Campaign-grouped unsubscribe dashboard, source badges, undo reset
 │   ├── favicon.png
 │   └── favicon.svg
@@ -72,6 +72,8 @@ Listmonk-Dashboard/
 │   ├── test_fixes_round2.py       # Regression tests for the second review
 │   ├── test_fixes_round3.py       # Regression tests for the third review (DSN parsing, attribution, sessions, ...)
 │   ├── test_fixes_round4.py       # Regression tests for the fourth review (unattributed unsubscribes, 30d floor, null-safety, UTF-8)
+│   ├── test_fixes_round5.py       # Regression tests for the fifth review (subscriber lists, search, BODY.PEEK, auto-unblock, archive, jobs)
+│   ├── test_fixes_round6.py       # Regression tests for the sixth review (X-Forwarded-Proto, cross-site guard, partial PUTs, cache invalidation, error contract)
 │   ├── conftest.py                # Resets module-level caches between tests
 │   └── test_regressions.py        # Route order, IMAP seen-marking, deleted-campaign flagging, timestamp regressions
 ├── .github/
@@ -129,7 +131,7 @@ Listmonk-Dashboard/
   or when `TRUST_PROXY=true` — otherwise a spoofed header would let an attacker
   reset the limiter on every attempt. Credential comparison encodes to UTF-8 first
   so non-ASCII input is a normal `401` rather than a `500`.
-- `SecurityHeadersMiddleware` sets `X-Content-Type-Options`, `Referrer-Policy`, and `X-Frame-Options` on every response.
+- `SecurityHeadersMiddleware` sets `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, `Permissions-Policy`, and `Cache-Control: no-store` (dynamic responses) on every response.
 
 ### 3. Bounce Ingestion & Smart Filtering
 - **Bounce Ingestion** (`app/services/bounce_ingest.py`):
@@ -189,7 +191,7 @@ Listmonk-Dashboard/
 All background tasks run as managed `asyncio.create_task` loops in `app/main.py`:
 | Task Loop | Interval | Purpose |
 |-----------|----------|---------|
-| `auto_unblock_loop` | 6 hours | Finds clickers/openers blocklisted *by a bounce*, re-enables them, deletes false bounce records. Never touches subscribers without a hard/soft bounce, complainers, or anyone in the unsubscribe records |
+| `auto_unblock_loop` | 6 hours | Finds clickers/openers blocklisted *by a bounce*, re-enables them, restores list memberships, deletes false bounce records. Never touches subscribers without a hard/soft bounce, complainers, or anyone in the unsubscribe records |
 | `scheduler_loop` | 60 seconds | Enforces daily send windows, auto-pauses/resumes campaigns |
 | `imap_scan_loop` | 1 hour | Scans IMAP inbox for replies + polls ListMonk for link unsubscribes |
 | `bounce_ingest_loop` | 1 hour | Scans bounce mailbox for unseen DSNs, classifies & records bounces |
@@ -262,10 +264,10 @@ All background tasks run as managed `asyncio.create_task` loops in `app/main.py`
 | | `/api/unsubscribes/campaign/{id}/export` | GET | Export campaign unsubscribes as CSV |
 | | `/api/unsubscribes/records` | DELETE | Delete specific records by email |
 | | `/api/unsubscribes/export` | GET | Export all unsubscribes as CSV |
-| | `/api/unsubscribes/scan` | POST | Manually trigger IMAP + link scan |
+| | `/api/unsubscribes/scan` | POST | Manually trigger IMAP + link scan (`?background=true` + `/scan/status`) |
 | | `/api/unsubscribes/imap-status` | GET | Check IMAP connection health |
 | | `/api/unsubscribes/clear` | DELETE | Clear all unsubscribe log records |
-| | `/api/unsubscribes/reset` | POST | Undo all unsubscribes & restore list memberships |
+| | `/api/unsubscribes/reset` | POST | Undo all unsubscribes & restore list memberships (`?background=true` + `/reset/status`) |
 
 ---
 
@@ -301,3 +303,6 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 13. **CSV exports** — go through `export_service` so text cells starting with `= + - @` are neutralised (CSV formula injection); subscriber names come from public forms.
 14. **Upstream auth errors** — a ListMonk `401` is reported as `502` (bad dashboard credentials), never passed through: the frontend treats `401` as "session expired" and would redirect-loop.
 15. **Tests never run the app lifespan** — don't use `with TestClient(app)`; it starts the real background loops against whatever the local `.env` points at.
+16. **Subscriber updates** — ListMonk's `PUT /api/subscribers/{id}` clears any list omitted from `lists`. The router merges the current memberships when `lists` is absent; keep that guard (or use PATCH) before changing the update path.
+17. **Subscriber search** — ListMonk's `query` parameter is a raw SQL expression. The UI's plain-text `search` is translated by `subscriber_search_query()`; never pass free-form text as `query`.
+18. **IMAP fetches** — use `BODY.PEEK[...]`, never `RFC822`/`BODY[]`, or the server marks messages `\Seen` before the retry logic can run.

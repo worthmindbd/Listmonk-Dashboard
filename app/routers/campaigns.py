@@ -4,11 +4,15 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from typing import Optional
 from app.services.listmonk_client import listmonk
-from app.services.export_service import dict_list_to_csv, aiter_dicts_to_csv
+from app.services.export_service import (
+    dict_list_to_csv, aiter_dicts_to_csv, safe_filename_part,
+)
 from app.services.bounce_filters import campaign_views_query
 from app.services.bounce_list import fetch_all_filtered_bounces, fetch_filtered_bounces_page
+from app.services import opener_cache
 from app.services.hard_bounce_cache import (
     get_all_hard_bounce_counts, get_last_updated,
+    remove_campaign_hard_bounce_count, schedule_hard_bounce_update,
 )
 
 router = APIRouter()
@@ -59,8 +63,9 @@ async def get_campaigns(page: int = Query(1, ge=1, le=MAX_PAGE),
                         per_page: int = Query(50, ge=1, le=MAX_PER_PAGE),
                         query: str = "", status: str = "",
                         order_by: str = "created_at", order: str = "DESC"):
-    result = await listmonk.get_campaigns(page, per_page, query, status,
-                                           order_by, order)
+    result = await listmonk.get_campaigns(
+        page, per_page, query, status, order_by, order, no_body=True,
+    )
 
     # Replace bounce counts with hard bounce counts from cache. Only do this
     # once the cache has been populated — otherwise raw (soft-inclusive)
@@ -77,13 +82,35 @@ async def get_campaigns(page: int = Query(1, ge=1, le=MAX_PAGE),
 
 @router.get("/running/stats")
 async def get_running_stats(campaign_id: Optional[int] = None):
-    return await listmonk.get_running_stats(campaign_id)
+    result = await listmonk.get_running_stats(campaign_id)
+    # ListMonk's running-stats endpoint has no campaign filter; apply it here
+    # so the documented parameter is not a lie.
+    if campaign_id:
+        data = result.get("data")
+        if isinstance(data, list):
+            result["data"] = [
+                camp for camp in data if camp.get("id") == campaign_id
+            ]
+    return result
+
+
+ANALYTICS_TYPES = {"views", "clicks", "bounces", "links"}
+
+
+def _validate_analytics_type(analytics_type: str) -> str:
+    if analytics_type not in ANALYTICS_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid analytics type: {analytics_type}",
+        )
+    return analytics_type
 
 
 @router.get("/analytics/{analytics_type}")
 async def get_campaign_analytics(analytics_type: str,
                                  campaign_id: int = 0,
                                  from_date: str = "", to_date: str = ""):
+    _validate_analytics_type(analytics_type)
     return await listmonk.get_campaign_analytics(analytics_type, campaign_id,
                                                  from_date, to_date)
 
@@ -93,6 +120,7 @@ async def export_campaign_analytics(analytics_type: str,
                                     campaign_id: int = 0,
                                     from_date: str = "", to_date: str = ""):
     """Export campaign analytics as CSV."""
+    _validate_analytics_type(analytics_type)
     result = await listmonk.get_campaign_analytics(analytics_type, campaign_id,
                                                    from_date, to_date)
     data = result.get("data")
@@ -103,7 +131,12 @@ async def export_campaign_analytics(analytics_type: str,
     return StreamingResponse(
         dict_list_to_csv(data, columns),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=analytics_{analytics_type}.csv"},
+        headers={
+            "Content-Disposition": (
+                "attachment; filename=analytics_"
+                f"{safe_filename_part(analytics_type, 'analytics')}.csv"
+            )
+        },
     )
 
 
@@ -119,6 +152,7 @@ async def export_all_campaigns():
     async def rows():
         async for c in listmonk.iter_pages(
             listmonk.get_campaigns, per_page=100, max_pages=EXPORT_MAX_PAGES,
+            no_body=True,
         ):
             if hard_counts_ready:
                 c["bounces"] = hard_counts.get(c.get("id"), 0)
@@ -153,7 +187,9 @@ async def get_campaigns_summary():
     if _summary_cache and now - _summary_cached_at < _SUMMARY_TTL:
         return _summary_cache
 
-    campaigns = await listmonk.paginate_all(listmonk.get_campaigns, per_page=100)
+    campaigns = await listmonk.paginate_all(
+        listmonk.get_campaigns, per_page=100, no_body=True,
+    )
 
     status_counts: dict[str, int] = {}
     sent = views = clicks = 0
@@ -242,8 +278,8 @@ async def export_campaign_subscribers(campaign_id: int, engagement_type: str):
 
 
 @router.get("/{campaign_id}")
-async def get_campaign(campaign_id: int):
-    result = await listmonk.get_campaign(campaign_id)
+async def get_campaign(campaign_id: int, no_body: bool = False):
+    result = await listmonk.get_campaign(campaign_id, no_body=no_body)
 
     # Replace bounce count with hard-bounce cache (populated at startup
     # and refreshed every 5 min). Keeps ListMonk's raw count until the
@@ -272,7 +308,9 @@ async def preview_campaign(campaign_id: int):
 
 @router.post("")
 async def create_campaign(data: dict):
-    return await listmonk.create_campaign(data)
+    result = await listmonk.create_campaign(data)
+    invalidate_summary_cache()
+    return result
 
 
 @router.post("/{campaign_id}/test")
@@ -282,19 +320,58 @@ async def test_campaign(campaign_id: int, data: dict):
 
 @router.put("/{campaign_id}")
 async def update_campaign(campaign_id: int, data: dict):
-    return await listmonk.update_campaign(campaign_id, data)
+    """Update a campaign, preserving existing fields omitted by partial callers."""
+    payload = dict(data)
+    preserve_keys = (
+        "name", "subject", "body", "type", "content_type",
+        "template_id", "messenger", "from_email", "tags",
+    )
+    needs_lists = "lists" not in payload or payload.get("lists") is None
+    needs_fields = any(
+        k not in payload or payload.get(k) is None
+        for k in ("type", "content_type", "template_id")
+    )
+    if (needs_lists or needs_fields) and hasattr(listmonk, "get_campaign"):
+        current = await listmonk.get_campaign(campaign_id)
+        camp = (current or {}).get("data") or {}
+        if needs_lists and "lists" in camp:
+            payload["lists"] = [
+                lst.get("id") if isinstance(lst, dict) else lst
+                for lst in (camp.get("lists") or [])
+                if (lst.get("id") if isinstance(lst, dict) else lst)
+            ]
+        for key in preserve_keys:
+            if (key not in payload or payload.get(key) is None) and camp.get(key) is not None:
+                payload[key] = camp[key]
+    result = await listmonk.update_campaign(campaign_id, payload)
+    invalidate_summary_cache()
+    return result
 
 
 @router.put("/{campaign_id}/status")
 async def change_campaign_status(campaign_id: int, data: dict):
-    return await listmonk.change_campaign_status(campaign_id, data.get("status", ""))
+    result = await listmonk.change_campaign_status(campaign_id, data.get("status", ""))
+    invalidate_summary_cache()
+    return result
 
 
 @router.put("/{campaign_id}/archive")
-async def archive_campaign(campaign_id: int):
-    return await listmonk.archive_campaign(campaign_id)
+async def archive_campaign(campaign_id: int, data: dict | None = None):
+    archive = True
+    if data is not None:
+        if "archive" in data and not isinstance(data["archive"], bool):
+            raise HTTPException(status_code=400, detail="archive must be a boolean")
+        archive = data.get("archive", True)
+    result = await listmonk.archive_campaign(campaign_id, archive=archive)
+    invalidate_summary_cache()
+    return result
 
 
 @router.delete("/{campaign_id}")
 async def delete_campaign(campaign_id: int):
-    return await listmonk.delete_campaign(campaign_id)
+    result = await listmonk.delete_campaign(campaign_id)
+    invalidate_summary_cache()
+    opener_cache.invalidate(campaign_id)
+    remove_campaign_hard_bounce_count(campaign_id)
+    schedule_hard_bounce_update()
+    return result

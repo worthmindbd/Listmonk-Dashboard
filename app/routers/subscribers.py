@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from typing import Optional
 from app.services.listmonk_client import listmonk
 from app.services.export_service import aiter_dicts_to_csv
+from app.services.imap_helpers import subscriber_search_query
 
 router = APIRouter()
 
@@ -21,24 +22,37 @@ EXPORT_MAX_PAGES = 2000
 @router.get("")
 async def get_subscribers(page: int = Query(1, ge=1, le=MAX_PAGE),
                           per_page: int = Query(50, ge=1, le=MAX_PER_PAGE),
-                          query: str = "", list_id: Optional[int] = None):
-    return await listmonk.get_subscribers(page, per_page, query, list_id)
+                          query: str = "", search: str = "",
+                          list_id: Optional[int] = None):
+    """List subscribers.
+
+    ``search`` is the UI's plain-text search (name/email). ListMonk's ``query``
+    is a raw SQL expression and is kept for internal/advanced callers.
+    """
+    if len(search) > 200:
+        raise HTTPException(status_code=400, detail="search is too long")
+    effective_query = subscriber_search_query(search) if search else query
+    return await listmonk.get_subscribers(page, per_page, effective_query, list_id)
 
 
 @router.get("/export-all")
-async def export_all_subscribers(query: str = "", list_id: Optional[int] = None):
+async def export_all_subscribers(query: str = "", search: str = "",
+                                 list_id: Optional[int] = None):
     """Stream every subscriber as CSV, page by page.
 
     Rows are pulled from ListMonk lazily so peak memory stays at one page
     regardless of list size. 404 when the filter matches nothing.
     """
+    if len(search) > 200:
+        raise HTTPException(status_code=400, detail="search is too long")
+    effective_query = subscriber_search_query(search) if search else query
     columns = ["id", "email", "name", "status", "created_at", "updated_at"]
 
     async def rows():
         async for sub in listmonk.iter_pages(
             listmonk.get_subscribers, per_page=EXPORT_PAGE_SIZE,
             max_pages=EXPORT_MAX_PAGES,
-            query=query, list_id=list_id,
+            query=effective_query, list_id=list_id,
         ):
             yield sub
 
@@ -106,7 +120,31 @@ async def blocklist_subscribers(data: dict):
 
 @router.put("/{subscriber_id}")
 async def update_subscriber(subscriber_id: int, data: dict):
-    return await listmonk.update_subscriber(subscriber_id, data)
+    """Update a subscriber.
+
+    ListMonk's PUT is a full update: omitting ``lists`` clears every list
+    membership, and omitting ``email``/``name``/``status``/``attribs`` wipes
+    or rejects the record. Fetch the current subscriber and merge omitted
+    fields when a caller sends a partial update.
+    """
+    payload = dict(data)
+    needs_lists = "lists" not in payload or payload.get("lists") is None
+    needs_fields = any(
+        k not in payload or payload.get(k) is None
+        for k in ("email", "name", "status", "attribs")
+    )
+    if needs_lists or (needs_fields and hasattr(listmonk, "get_subscriber")):
+        current = await listmonk.get_subscriber(subscriber_id)
+        subscriber = (current or {}).get("data") or {}
+        if needs_lists:
+            payload["lists"] = [
+                lst.get("id") for lst in (subscriber.get("lists") or [])
+                if isinstance(lst, dict) and lst.get("id")
+            ]
+        for key in ("email", "name", "status", "attribs"):
+            if (key not in payload or payload.get(key) is None) and key in subscriber:
+                payload[key] = subscriber[key]
+    return await listmonk.update_subscriber(subscriber_id, payload)
 
 
 @router.put("/{subscriber_id}/blocklist")

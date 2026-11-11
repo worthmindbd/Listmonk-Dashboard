@@ -4,24 +4,53 @@
 const Subscribers = {
     page: 1,
     query: '',
+    listFilter: 0,
+    lists: [],
 
     async render() {
         const gen = App.beginRender();
         try {
-            const params = `page=${this.page}&per_page=50${this.query ? '&query=' + encodeURIComponent(this.query) : ''}`;
-            const result = await API.get(`/api/subscribers?${params}`);
+            let params = `page=${this.page}&per_page=50`;
+            if (this.query) params += `&search=${encodeURIComponent(this.query)}`;
+            if (this.listFilter) params += `&list_id=${this.listFilter}`;
+            // A list-filter lookup failure must not blank the whole page;
+            // API.request has already surfaced the error.
+            const fetchLists = !this.lists.length
+                ? API.get('/api/lists?per_page=200&minimal=true').catch(() => null)
+                : Promise.resolve(null);
+            const [result, listsRes] = await Promise.all([
+                API.get(`/api/subscribers?${params}`),
+                fetchLists,
+            ]);
             if (!App.isRenderCurrent(gen)) return; // stale render (navigated away / re-filtered)
+            if (listsRes) this.lists = listsRes?.data?.results || [];
             const data = result?.data || {};
             const subscribers = data.results || [];
             const total = data.total || 0;
+            // Deleting the last row on page > 1 used to leave an empty table
+            // with no pager (renderPagination returns '' for one page).
+            const maxPage = Math.max(1, Math.ceil(total / 50));
+            if (this.page > maxPage) {
+                this.page = maxPage;
+                return this.render();
+            }
 
             App.setActions(`
                 <button class="btn btn-sm" onclick="Subscribers.exportAll()">Export CSV</button>
                 <button class="btn btn-sm btn-primary" onclick="Subscribers.showCreate()">+ Add Subscriber</button>
             `);
 
+            const listOptions = this.lists.map(l =>
+                `<option value="${l.id}" ${l.id === this.listFilter ? 'selected' : ''}>${App.escapeHtml(l.name)}</option>`
+            ).join('');
+
             let html = `
                 <div class="search-bar">
+                    <select id="subListFilter" onchange="Subscribers.filterList(this.value)"
+                            aria-label="Filter subscribers by list" style="width:auto;min-width:180px">
+                        <option value="0" ${!this.listFilter ? 'selected' : ''}>All Lists</option>
+                        ${listOptions}
+                    </select>
                     <div class="search-input">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                         <input type="search" id="subSearch" placeholder="Search subscribers by email or name..."
@@ -72,6 +101,12 @@ const Subscribers = {
         this.render();
     },
 
+    filterList(value) {
+        this.listFilter = parseInt(value) || 0;
+        this.page = 1;
+        this.render();
+    },
+
     goToPage(p) { this.page = p; this.render(); },
 
     showCreate() {
@@ -86,6 +121,7 @@ const Subscribers = {
                     <label>Status</label>
                     <select id="subStatus">
                         <option value="enabled">Enabled</option>
+                        <option value="disabled">Disabled</option>
                         <option value="blocklisted">Blocklisted</option>
                     </select>
                 </div>
@@ -120,9 +156,18 @@ const Subscribers = {
     },
 
     async showEdit(id) {
+        const gen = App.beginRender();
         try {
             const result = await API.get(`/api/subscribers/${id}`);
+            if (!App.isRenderCurrent(gen)) return;
             const s = result?.data || {};
+            // Preserve memberships: ListMonk's PUT clears any list not sent.
+            // Keep null when the response omits lists (unknown), so update()
+            // lets the backend preserve the current memberships instead of
+            // sending [] and wiping them.
+            this._lists = Array.isArray(s.lists)
+                ? s.lists.filter(l => l && l.id != null).map(l => l.id)
+                : null;
 
             App.setContent(`
                 <div class="inline-form">
@@ -135,6 +180,7 @@ const Subscribers = {
                         <label>Status</label>
                         <select id="editStatus">
                             <option value="enabled" ${s.status === 'enabled' ? 'selected' : ''}>Enabled</option>
+                            <option value="disabled" ${s.status === 'disabled' ? 'selected' : ''}>Disabled</option>
                             <option value="blocklisted" ${s.status === 'blocklisted' ? 'selected' : ''}>Blocklisted</option>
                         </select>
                     </div>
@@ -157,11 +203,22 @@ const Subscribers = {
         const email = document.getElementById('editEmail').value.trim();
         const name = document.getElementById('editName').value.trim();
         const status = document.getElementById('editStatus').value;
-        let attribs = {};
-        try { attribs = JSON.parse(document.getElementById('editAttribs').value); } catch {}
-
+        let attribs;
         try {
-            await API.put(`/api/subscribers/${id}`, { email, name, status, attribs });
+            attribs = JSON.parse(document.getElementById('editAttribs').value || '{}');
+        } catch {
+            App.toast('Attributes must be valid JSON; nothing was saved', 'error');
+            return;
+        }
+        if (!attribs || typeof attribs !== 'object' || Array.isArray(attribs)) {
+            App.toast('Attributes must be a JSON object; nothing was saved', 'error');
+            return;
+        }
+
+        const payload = { email, name, status, attribs };
+        if (Array.isArray(this._lists)) payload.lists = this._lists;
+        try {
+            await API.put(`/api/subscribers/${id}`, payload);
             App.toast('Subscriber updated', 'success');
             this.render();
         } catch {
@@ -183,7 +240,10 @@ const Subscribers = {
 
     async exportAll() {
         try {
-            const queryParam = this.query ? `?query=${encodeURIComponent(this.query)}` : '';
+            const params = new URLSearchParams();
+            if (this.query) params.set('search', this.query);
+            if (this.listFilter) params.set('list_id', String(this.listFilter));
+            const queryParam = params.toString() ? `?${params}` : '';
             const result = await API.get(`/api/subscribers/export-all${queryParam}`);
             if (result && result.blob) {
                 API.downloadBlob(result.blob, 'subscribers_export.csv');

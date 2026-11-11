@@ -24,7 +24,7 @@ const Analytics = {
         // Fetch campaigns, unsubscribe stats, and accurate totals in parallel
         try {
             const [campRes, unsubRes, summaryRes] = await Promise.allSettled([
-                API.get('/api/campaigns?per_page=100&order_by=created_at&order=DESC'),
+                API.get('/api/campaigns?per_page=500&order_by=created_at&order=DESC&no_body=true'),
                 API.get('/api/unsubscribes/stats'),
                 API.get('/api/campaigns/summary'),
             ]);
@@ -290,21 +290,26 @@ const Analytics = {
     },
 
     async onCampaignChange(val) {
-        this.selectedCampaignId = parseInt(val);
-        await this.loadCampaignUnsubCount();
+        const requested = parseInt(val);
+        this.selectedCampaignId = requested;
+        await this.loadCampaignUnsubCount(requested);
+        // A slower response for an earlier selection must not render over the
+        // campaign the user actually picked.
+        if (this.selectedCampaignId !== requested) return;
         this.renderPage();
     },
 
-    async loadCampaignUnsubCount() {
-        if (!this.selectedCampaignId) {
-            this.campaignUnsubCount = 0;
+    async loadCampaignUnsubCount(campaignId = this.selectedCampaignId) {
+        if (!campaignId) {
+            if (this.selectedCampaignId === campaignId) this.campaignUnsubCount = 0;
             return;
         }
         try {
-            const res = await API.get(`/api/unsubscribes/stats?campaign_id=${this.selectedCampaignId}`);
+            const res = await API.get(`/api/unsubscribes/stats?campaign_id=${campaignId}`);
+            if (this.selectedCampaignId !== campaignId) return;
             this.campaignUnsubCount = res.campaign_count || 0;
         } catch {
-            this.campaignUnsubCount = 0;
+            if (this.selectedCampaignId === campaignId) this.campaignUnsubCount = 0;
         }
     },
 
@@ -317,12 +322,13 @@ const Analytics = {
         this.fromDate = document.getElementById('analyticsFrom')?.value || this.fromDate;
         this.toDate = document.getElementById('analyticsTo')?.value || this.toDate;
 
-        if (!this.selectedCampaignId) {
+        const campId = this.selectedCampaignId;
+        if (!campId) {
             App.toast('Select a campaign first', 'error');
             return;
         }
 
-        const baseParams = `campaign_id=${this.selectedCampaignId}&from_date=${this.fromDate}&to_date=${this.toDate}`;
+        const baseParams = `campaign_id=${campId}&from_date=${this.fromDate}&to_date=${this.toDate}`;
 
         // Fetch all analytics types in parallel
         const [viewsRes, clicksRes, bouncesRes, linksRes] = await Promise.allSettled([
@@ -337,6 +343,7 @@ const Analytics = {
         const bouncesData = bouncesRes.status === 'fulfilled' ? (bouncesRes.value?.data || []) : [];
         const linksData = linksRes.status === 'fulfilled' ? (linksRes.value?.data || []) : [];
 
+        if (this.selectedCampaignId !== campId) return;
         this.renderTimeChart('viewsChart', 'views', viewsData, '#10b981', 'rgba(16,185,129,0.12)');
         this.renderTimeChart('clicksChart', 'clicks', clicksData, '#f59e0b', 'rgba(245,158,11,0.12)');
         this.renderTimeChart('bouncesChart', 'bounces', bouncesData, '#ea2261', 'rgba(234,34,97,0.12)');
@@ -361,8 +368,12 @@ const Analytics = {
         }
 
         const labels = data.map(d => {
+            // Analytics buckets are UTC midnight; formatting in local time
+            // shifted every label a day back for users west of UTC.
             const date = new Date(d.timestamp);
-            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            return date.toLocaleDateString('en-US', {
+                month: 'short', day: 'numeric', timeZone: 'UTC',
+            });
         });
         const values = data.map(d => d.count || 0);
 

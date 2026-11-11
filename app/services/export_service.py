@@ -1,7 +1,18 @@
 import csv
 import io
 import json
+import re
 from typing import Any, AsyncIterator, Iterator
+
+
+def safe_filename_part(value: Any, fallback: str = "export") -> str:
+    """Make a value safe to embed in a Content-Disposition filename.
+
+    Query/path parameters such as ``bounce_type`` are free-form; a CR/LF or
+    non-latin-1 character would otherwise reach the response header layer.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "")).strip("._-")
+    return cleaned[:60] or fallback
 
 
 # Leading characters that make Excel/LibreOffice/Sheets evaluate a cell as a
