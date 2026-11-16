@@ -16,11 +16,12 @@ def _reset_module_caches(tmp_path, monkeypatch):
     from app.auth import _login_failures
     from app.routers import campaigns, unsubscribes
     from app.services import (
-        bounce_ingest, hard_bounce_cache, imap_unsubscribe, link_unsubscribe, opener_cache,
+        bounce_ingest, campaign_scheduler, hard_bounce_cache, imap_unsubscribe, link_unsubscribe, opener_cache,
     )
 
-    # Session revocations persist to DATA_DIR; keep tests out of the real one.
+    # Session revocations and scheduler state persist to DATA_DIR; keep tests out of the real ones.
     monkeypatch.setattr(auth, "_revoked_path", lambda: tmp_path / "revoked_sessions.json")
+    monkeypatch.setattr(campaign_scheduler, "SCHEDULE_FILE", tmp_path / "schedule.json")
 
     def _reset():
         # Server-side session revocation set (logout).

@@ -158,6 +158,7 @@ const Settings = {
         ).join('');
 
         const autoPaused = s.auto_paused_campaigns || [];
+        const manualPausedCount = Object.keys(s.manual_paused_campaigns || {}).length;
 
         return `
             <div class="card" style="margin-bottom:20px">
@@ -181,6 +182,10 @@ const Settings = {
                         <span style="color:var(--text-muted);font-size:0.85rem">Auto-paused campaigns:</span>
                         <strong id="autoPausedCount" style="color:var(--warning)">${autoPaused.length}</strong>
                     </div>
+                    <div>
+                        <span style="color:var(--text-muted);font-size:0.85rem">Queued for next window:</span>
+                        <strong id="manualPausedCount" style="color:var(--accent)">${manualPausedCount}</strong>
+                    </div>
                 </div>
             </div>
 
@@ -194,7 +199,7 @@ const Settings = {
                     </label>
                     <p style="font-size:0.85rem;color:var(--text-muted);margin-top:8px">
                         When enabled, running campaigns will auto-pause outside the send window and auto-resume when the window opens.
-                        Manually paused campaigns are never affected.
+                        Manually paused campaigns stay paused for the current window and auto-resume starting from the next send window until finished.
                     </p>
                 </div>
 
@@ -252,9 +257,9 @@ const Settings = {
                     <ul style="padding-left:20px;margin:8px 0">
                         <li>If current time is <strong>outside</strong> the send window and a campaign is <strong>running</strong> → it gets <strong>auto-paused</strong></li>
                         <li>If current time is <strong>inside</strong> the send window and a campaign was <strong>auto-paused</strong> → it gets <strong>auto-resumed</strong></li>
-                        <li>Campaigns you <strong>manually pause</strong> are never touched by the scheduler</li>
+                        <li>If you <strong>manually pause</strong> a campaign → it stays paused for the rest of the current window and <strong>auto-resumes from the next send window</strong> until finished</li>
                     </ul>
-                    <p>The scheduler only affects campaigns with status "running". Draft, finished, or cancelled campaigns are ignored.</p>
+                    <p>Draft, finished, and cancelled campaigns are ignored. To stop a campaign permanently instead of resuming at the next window, cancel it.</p>
                 </div>
             </div>
         `;
@@ -382,7 +387,8 @@ const Settings = {
             const result = await API.post('/api/scheduler/run');
             const status = result.in_send_window ? 'Inside send window' : 'Outside send window';
             const paused = result.auto_paused_campaigns?.length || 0;
-            App.toast(`${status} | ${paused} campaign(s) currently auto-paused`, 'info');
+            const manualPaused = Object.keys(result.manual_paused_campaigns || {}).length;
+            App.toast(`${status} | ${paused} auto-paused, ${manualPaused} queued for next window`, 'info');
             this.schedule = await API.get('/api/scheduler');
             this.renderTab();
         } catch {
@@ -452,6 +458,8 @@ const Settings = {
             if (badge) badge.innerHTML = this._schedulerStatusHtml(this.schedule);
             const countEl = document.getElementById('autoPausedCount');
             if (countEl) countEl.textContent = (this.schedule.auto_paused_campaigns || []).length;
+            const manualEl = document.getElementById('manualPausedCount');
+            if (manualEl) manualEl.textContent = Object.keys(this.schedule.manual_paused_campaigns || {}).length;
         } catch {}
     },
 };

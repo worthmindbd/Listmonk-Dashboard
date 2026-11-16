@@ -14,8 +14,17 @@ const Campaigns = {
             if (this.query) params += `&query=${encodeURIComponent(this.query)}`;
             if (this.statusFilter) params += `&status=${this.statusFilter}`;
 
-            const result = await API.get(`/api/campaigns?${params}`);
+            const [campSettled, schedSettled] = await Promise.allSettled([
+                API.get(`/api/campaigns?${params}`),
+                API.get('/api/scheduler'),
+            ]);
             if (!App.isRenderCurrent(gen)) return; // stale render (navigated away / re-filtered)
+            if (campSettled.status !== 'fulfilled') throw campSettled.reason;
+            const result = campSettled.value;
+            const sched = schedSettled.status === 'fulfilled' ? (schedSettled.value || {}) : {};
+            const schedEnabled = Boolean(sched.enabled);
+            const autoPausedSet = new Set((sched.auto_paused_campaigns || []).map(Number));
+            const manualPausedSet = new Set(Object.keys(sched.manual_paused_campaigns || {}).map(Number));
             const data = result?.data || {};
             const campaigns = data.results || [];
             const total = data.total || 0;
@@ -64,11 +73,19 @@ const Campaigns = {
             campaigns.forEach(c => {
                 const listNames = (c.lists || []).map(l => `<span class="tag">${App.escapeHtml(l.name)}</span>`).join('') || '-';
                 const sent = c.sent !== undefined && c.sent !== null ? c.sent : (c.to_send || 0);
+                let schedNote = '';
+                if (schedEnabled && c.status === 'paused') {
+                    if (manualPausedSet.has(c.id)) {
+                        schedNote = ' <span class="tag" title="Manually paused; will auto-resume from next send window">Next window</span>';
+                    } else if (autoPausedSet.has(c.id)) {
+                        schedNote = ' <span class="tag" title="Auto-paused outside send window; will resume when window opens">Auto-paused</span>';
+                    }
+                }
                 html += `<tr>
                     <td>${c.id}</td>
                     <td><strong>${App.escapeHtml(c.name)}</strong></td>
                     <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${App.escapeHtml(c.subject) || '-'}</td>
-                    <td>${App.statusBadge(c.status)}</td>
+                    <td>${App.statusBadge(c.status)}${schedNote}</td>
                     <td>${listNames}</td>
                     <td>${App.formatNumber(sent)}</td>
                     <td>${App.formatDate(c.created_at)}</td>
@@ -230,7 +247,7 @@ const Campaigns = {
                             <button class="btn btn-sm" onclick="Campaigns.exportCampaign(${c.id})">Export CSV</button>
                             <button class="btn btn-sm" onclick="Campaigns.preview(${c.id})">Preview</button>
                             <button class="btn btn-sm" onclick="Campaigns.toggleArchive(${c.id}, ${c.archive ? 'false' : 'true'})">${c.archive ? 'Unarchive' : 'Archive'}</button>
-                            ${c.status === 'running' ? `<button class="btn btn-sm" onclick="Campaigns.changeStatus(${c.id},'cancelled')">Cancel</button>` : ''}
+                            ${(c.status === 'running' || c.status === 'paused') ? `<button class="btn btn-sm" onclick="Campaigns.changeStatus(${c.id},'cancelled')">Cancel</button>` : ''}
                             <button class="btn btn-sm" onclick="Campaigns.showEdit(${c.id})">Edit</button>
                             <button class="btn btn-sm btn-secondary" onclick="Campaigns.render()">Back</button>
                         </div>

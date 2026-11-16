@@ -14,6 +14,10 @@ from app.services.hard_bounce_cache import (
     get_all_hard_bounce_counts, get_last_updated,
     remove_campaign_hard_bounce_count, schedule_hard_bounce_update,
 )
+from app.services.campaign_scheduler import (
+    clear_campaign_tracking,
+    handle_manual_campaign_status_change,
+)
 
 router = APIRouter()
 
@@ -350,8 +354,10 @@ async def update_campaign(campaign_id: int, data: dict):
 
 @router.put("/{campaign_id}/status")
 async def change_campaign_status(campaign_id: int, data: dict):
-    result = await listmonk.change_campaign_status(campaign_id, data.get("status", ""))
+    status = data.get("status", "")
+    result = await listmonk.change_campaign_status(campaign_id, status)
     invalidate_summary_cache()
+    await handle_manual_campaign_status_change(campaign_id, status)
     return result
 
 
@@ -374,4 +380,5 @@ async def delete_campaign(campaign_id: int):
     opener_cache.invalidate(campaign_id)
     remove_campaign_hard_bounce_count(campaign_id)
     schedule_hard_bounce_update()
+    await clear_campaign_tracking(campaign_id)
     return result

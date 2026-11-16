@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -468,6 +468,7 @@ async def update_schedule(data: dict):
     # stale snapshot over these new settings (and vice versa).
     async with _SCHEDULE_SAVE_LOCK:
         schedule = load_schedule()
+        was_enabled = bool(schedule.get("enabled"))
         for key in ["enabled", "timezone", "start_hour", "start_minute",
                     "end_hour", "end_minute", "days"]:
             if key in data:
@@ -482,6 +483,11 @@ async def update_schedule(data: dict):
                 status_code=400,
                 detail="Send window start and end must differ (to send around the clock, disable the scheduler).",
             )
+        now_enabled = bool(schedule.get("enabled"))
+        if now_enabled and not was_enabled:
+            schedule["enabled_at"] = datetime.now(timezone.utc).isoformat()
+        elif not now_enabled and was_enabled:
+            schedule["enabled_at"] = None
         try:
             save_schedule(schedule)
         except OSError as e:
@@ -510,6 +516,7 @@ async def scheduler_run_now():
         "status": "ok",
         "in_send_window": is_within_send_window(schedule),
         "auto_paused_campaigns": schedule.get("auto_paused_campaigns", []),
+        "manual_paused_campaigns": schedule.get("manual_paused_campaigns", {}),
     }
 
 

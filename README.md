@@ -45,7 +45,7 @@ ListMonk requires a specific CSV format (`email`, `name`, `attributes` as JSON).
 4. **Download** the converted CSV or **import directly** into ListMonk with selected target lists and subscription mode.
 
 ### Settings & Automation
-- **Campaign Scheduler** — Enforces daily sending windows (e.g., 8:00 AM – 8:00 PM EST) and allowed days (Mon–Fri, weekends). Running campaigns outside the window auto-pause, and auto-paused campaigns automatically resume when the window opens.
+- **Campaign Scheduler** — Enforces daily sending windows (e.g., 8:00 AM – 8:00 PM EST) and allowed days (Mon–Fri, weekends). Running campaigns outside the window auto-pause, auto-paused campaigns automatically resume when the window opens, and manually paused campaigns stay paused for the current window and auto-resume from the next sending window until finished.
 - **Auto-Unblock Protection** — Identifies engaged subscribers (who clicked links or opened campaigns) who were accidentally blocklisted by false bounces, re-enables them, restores their list memberships, and purges their bounce records. Runs every 6 hours or manually. Deliberate blocklists are never reversed: subscribers with no bounce record (e.g. blocklisted by hand), spam complainers, and anyone in the unsubscribe log stay blocklisted.
 - **Persistent Data Store** — Runtime configuration and logs persist to `DATA_DIR` (backed by a named volume in Docker).
 
